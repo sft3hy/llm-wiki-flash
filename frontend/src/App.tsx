@@ -1,17 +1,24 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
-import { Book, FileText, Search, Settings, Share2, Upload, MessageSquare, Activity, LayoutGrid, Info } from 'lucide-react';
+import { Book, FileText, Search, Settings, Upload, MessageSquare, Activity, LayoutGrid, Info, Cpu, Cloud } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import matter from 'gray-matter';
 import KnowledgeGraph from './components/KnowledgeGraph';
 import ChatView from './components/ChatView';
 import SettingsView from './components/SettingsView';
 import MeditationView from './components/MeditationView';
+import ModelSelector from './components/ModelSelector';
 
 const API_BASE = "http://localhost:8000";
 
-type ViewType = 'wiki' | 'chat' | 'settings' | 'meditation' | 'graph' | 'comparison';
+type ViewType = 'wiki' | 'chat' | 'settings' | 'meditation' | 'graph';
+
+interface Model {
+  model_id: string;
+  display_name: string;
+  provider: string;
+  description: string;
+}
 
 function App() {
   const [wikiPages, setWikiPages] = useState<string[]>([]);
@@ -19,12 +26,43 @@ function App() {
   const [pageContent, setPageContent] = useState<string>("");
   const [isIngesting, setIsIngesting] = useState(false);
   const [activeView, setActiveView] = useState<ViewType>('wiki');
-  const [comparisonResults, setComparisonResults] = useState<any[]>([]);
+
   const [ingestProgress, setIngestProgress] = useState<{message: string, progress: number, status: string} | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // Model state
+  const [models, setModels] = useState<Model[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>('');
+  const [groqConfigured, setGroqConfigured] = useState(false);
 
   useEffect(() => {
     fetchWikiPages();
+    fetchModels();
   }, []);
+
+  const fetchModels = async () => {
+    try {
+      const response = await axios.get(`${API_BASE}/models`);
+      setModels(response.data.models);
+      setGroqConfigured(response.data.groq_configured);
+      // Restore from localStorage or use default
+      const stored = localStorage.getItem('llm-wiki-model');
+      if (stored && response.data.models.find((m: Model) => m.model_id === stored)) {
+        setSelectedModel(stored);
+      } else {
+        setSelectedModel(response.data.default);
+      }
+    } catch (error) {
+      console.error("Error fetching models:", error);
+      // Fallback defaults
+      setSelectedModel('gemma4:e4b');
+    }
+  };
+
+  const handleModelChange = (modelId: string) => {
+    setSelectedModel(modelId);
+    localStorage.setItem('llm-wiki-model', modelId);
+  };
 
   const fetchWikiPages = async () => {
     try {
@@ -66,7 +104,7 @@ function App() {
     };
 
     try {
-      await axios.post(`${API_BASE}/ingest`, formData);
+      await axios.post(`${API_BASE}/ingest?model=${selectedModel}`, formData);
       await fetchWikiPages();
     } catch (error) {
       console.error("Error uploading file:", error);
@@ -78,36 +116,13 @@ function App() {
     }
   };
 
-  const handleCompare = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    setIsIngesting(true);
-    const formData = new FormData();
-    formData.append('file', file);
-
-    try {
-      const response = await axios.post(`${API_BASE}/compare`, formData);
-      setComparisonResults(response.data.results);
-      setActiveView('comparison');
-    } catch (error) {
-      console.error("Error comparing models:", error);
-      alert("Comparison failed.");
-    } finally {
-      setIsIngesting(false);
-    }
-  };
 
   // Parse frontmatter and content
-  const { data: metadata, content: markdown } = useMemo(() => {
+  const { content: markdown } = useMemo(() => {
     try {
-      // gray-matter might need some polyfills or a browser build. 
-      // If it fails, we fallback to simple extraction
       if (pageContent.startsWith('---')) {
         const parts = pageContent.split('---');
         if (parts.length >= 3) {
-          // Simple mock parsing for demonstration if matter fails
-          // In a real app we'd use a robust browser parser
           return { data: {}, content: parts.slice(2).join('---').trim() };
         }
       }
@@ -116,6 +131,16 @@ function App() {
       return { data: {}, content: pageContent };
     }
   }, [pageContent]);
+
+  // Filter wiki pages by search
+  const filteredPages = useMemo(() => {
+    if (!searchQuery.trim()) return wikiPages;
+    const q = searchQuery.toLowerCase();
+    return wikiPages.filter(p => p.toLowerCase().includes(q));
+  }, [wikiPages, searchQuery]);
+
+  // Get current model info
+  const currentModel = models.find(m => m.model_id === selectedModel);
 
   return (
     <div className="flex h-screen bg-[#05070a] text-[#e2e8f0] font-sans overflow-hidden">
@@ -132,7 +157,7 @@ function App() {
           <div className="space-y-2">
             <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/30 px-3">Knowledge base</p>
             <nav className="space-y-1">
-              {wikiPages.map((page) => (
+              {filteredPages.map((page) => (
                 <button
                   key={page}
                   onClick={() => fetchPageContent(page)}
@@ -164,13 +189,26 @@ function App() {
                 className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl transition-all ${activeView === 'meditation' ? "bg-primary/10 text-primary border border-primary/20" : "hover:bg-white/5 text-white/60"}`}
               >
                 <Activity className="w-4 h-4" />
-                <span className="text-sm font-medium">Meditation</span>
+                <span className="text-sm font-medium">Librarian</span>
               </button>
             </div>
           </div>
         </div>
 
         <div className="pt-6 border-t border-white/5 space-y-3">
+          {/* Active Model Badge */}
+          {currentModel && (
+            <div className="flex items-center space-x-2 px-3 py-2 rounded-xl bg-white/[0.03] border border-white/5">
+              <div className={`p-1 rounded-md ${currentModel.provider === 'ollama' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-violet-500/10 text-violet-400'}`}>
+                {currentModel.provider === 'ollama' ? <Cpu className="w-3 h-3" /> : <Cloud className="w-3 h-3" />}
+              </div>
+              <div className="flex flex-col">
+                <span className="text-[10px] font-bold uppercase tracking-widest text-white/30">Active Model</span>
+                <span className="text-xs font-semibold text-white/70">{currentModel.display_name}</span>
+              </div>
+            </div>
+          )}
+
           <label className="flex items-center space-x-3 px-3 py-3 rounded-xl bg-white/5 hover:bg-white/10 cursor-pointer transition-all border border-white/5 group">
             <div className={`p-1.5 rounded-lg bg-primary/10 text-primary group-hover:scale-110 transition-transform ${isIngesting ? "animate-pulse" : ""}`}>
               <Upload className="w-4 h-4" />
@@ -189,10 +227,19 @@ function App() {
             <input 
               type="text" 
               placeholder="Search through knowledge..." 
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
               className="bg-transparent border-none focus:ring-0 text-sm w-full outline-none placeholder:text-white/20"
             />
           </div>
           <div className="flex items-center space-x-3">
+             {/* Model Selector */}
+             <ModelSelector
+               models={models}
+               selectedModel={selectedModel}
+               onModelChange={handleModelChange}
+               groqConfigured={groqConfigured}
+             />
              <button 
                onClick={() => setActiveView('chat')}
                className={`p-3 rounded-xl transition-all ${activeView === 'chat' ? "bg-primary text-white shadow-lg shadow-primary/20" : "bg-white/5 hover:bg-white/10 text-white/60"}`}
@@ -217,45 +264,17 @@ function App() {
               <KnowledgeGraph pages={wikiPages} onNodeClick={(node) => { fetchPageContent(node.id); }} />
             </div>
           ) : activeView === 'chat' ? (
-            <ChatView />
+            <ChatView selectedModel={selectedModel} />
           ) : activeView === 'settings' ? (
-            <SettingsView />
+            <SettingsView 
+              models={models}
+              selectedModel={selectedModel}
+              onModelChange={handleModelChange}
+              groqConfigured={groqConfigured}
+              wikiPages={wikiPages}
+            />
           ) : activeView === 'meditation' ? (
-            <MeditationView pages={wikiPages} />
-          ) : activeView === 'comparison' ? (
-            <div className="max-w-4xl mx-auto space-y-8 animate-in slide-in-from-bottom-4 duration-500">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="text-3xl font-bold tracking-tight">Model Comparison</h2>
-                  <p className="text-white/40 mt-1">Analyzing ingestion performance across providers.</p>
-                </div>
-                <button 
-                  onClick={() => setActiveView('wiki')}
-                  className="px-6 py-2.5 bg-white/5 hover:bg-white/10 text-white border border-white/10 rounded-xl text-sm font-medium transition-all"
-                >
-                  Back to Wiki
-                </button>
-              </div>
-              <div className="grid gap-4">
-                {comparisonResults.map((result, i) => (
-                  <div key={i} className="bg-[#0a0c12] p-6 rounded-2xl flex items-center justify-between border border-white/5 hover:border-primary/30 transition-all group">
-                    <div className="flex items-center space-x-4">
-                      <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center text-primary group-hover:scale-110 transition-transform">
-                        <Share2 className="w-6 h-6" />
-                      </div>
-                      <div>
-                        <h3 className="text-lg font-semibold text-white">{result.model}</h3>
-                        <p className="text-sm text-white/40">{result.provider} • <span className="text-green-500/80">{result.status}</span></p>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-3xl font-mono font-bold text-white tracking-tighter">{result.latency}s</p>
-                      <p className="text-[10px] uppercase tracking-[0.2em] text-white/30 font-black">Latency</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <MeditationView pages={wikiPages} selectedModel={selectedModel} />
           ) : selectedPage ? (
             <div className="max-w-4xl mx-auto animate-in fade-in duration-700">
               <div className="flex items-start justify-between mb-12">
@@ -266,12 +285,12 @@ function App() {
                   <div className="flex items-center space-x-4 text-xs font-bold uppercase tracking-widest text-white/30">
                     <span className="flex items-center space-x-1.5">
                       <Activity className="w-3 h-3" />
-                      <span>Updated 2026-04-29</span>
+                      <span>Wiki Page</span>
                     </span>
                     <span className="w-1 h-1 rounded-full bg-white/20"></span>
                     <span className="flex items-center space-x-1.5 text-primary/80">
                       <Info className="w-3 h-3" />
-                      <span>High Confidence</span>
+                      <span>Compiled</span>
                     </span>
                   </div>
                 </div>
@@ -323,8 +342,16 @@ function App() {
                 </div>
               </div>
               <div className="text-center space-y-3">
-                <h3 className="text-2xl font-black tracking-tight text-white">Ingesting Knowledge</h3>
+                <h3 className="text-2xl font-black tracking-tight text-white">Compiling Knowledge</h3>
                 <p className="text-sm text-white/40 leading-relaxed font-medium">{ingestProgress.message}</p>
+                {currentModel && (
+                  <div className="flex items-center justify-center space-x-2 pt-1">
+                    <div className={`p-1 rounded-md ${currentModel.provider === 'ollama' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-violet-500/10 text-violet-400'}`}>
+                      {currentModel.provider === 'ollama' ? <Cpu className="w-3 h-3" /> : <Cloud className="w-3 h-3" />}
+                    </div>
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-white/30">{currentModel.display_name}</span>
+                  </div>
+                )}
               </div>
               <div className="w-full space-y-4">
                 <div className="w-full bg-white/5 rounded-full h-3 overflow-hidden border border-white/5 p-0.5">
@@ -347,4 +374,3 @@ function App() {
 }
 
 export default App;
-
