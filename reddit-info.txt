@@ -1,0 +1,1406 @@
+Spent a weekend actually understanding and building Karpathy's "LLM Wiki" — here's what worked, what didn't : r/AI_Agents
+r/AI_Agents
+•
+10d ago
+OrewaDeveloper
+
+Spent a weekend actually understanding and building Karpathy's "LLM Wiki" — here's what worked, what didn't
+Tutorial
+After Karpathy's LLM Wiki gist blew up last month, I finally sat down and built one end-to-end to see if it actually good or if it's just hype. Sharing the honest takeaways because most of the writeups I've seen are either breathless "bye bye RAG" posts or dismissive 
+
+"it doesn't scale" takes.
+
+Quick recap of the idea (skip if you've read the gist): Instead of retrieving raw document chunks at query time like RAG, you have an LLM read each source once and compile it into a structured, interlinked markdown wiki. New sources update existing pages. Knowledge compounds instead of being re-derived on every query.
+
+What surprised me (the good):
+
+Synthesis questions are genuinely better. Asked "how do Sutton's Bitter Lesson and Karpathy's Software 2.0 essay connect?" and got a cross-referenced answer because the connection exists across documents, not within them.
+
+Setup is easy. Claude Code(Any Agent) + Obsidian + a folder. 
+
+The graph view in Obsidian after 10 sources is genuinely satisfying to look at. Actual networked thought.
+
+What can break (the real limitations):
+
+Hallucinations baked in as "facts." When the LLM summarized a paper slightly wrong on ingest it has effcts across. The lint step is non-negotiable.
+
+Ingest is expensive. Great for curated personal small scale knowledge, painful for an enterprise doc dump.
+
+When I'd actually use it:
+
+Personal research projects with <200 curated sources
+
+Reading a book and building a fan-wiki as you go
+
+Tracking a specific evolving topic over months
+
+Internal team wikis fed by meeting transcripts
+
+When I'd stick with RAG:
+
+Customer support over constantly-updated docs
+
+Legal/medical search where citation traceability is critical
+
+Anything with >1000 sources or high churn
+
+The "RAG is dead" framing is wrong. They solve different  problems.
+
+ 
+
+10d ago
+I made a full video walkthrough with the build demo if  anyone wants to see it end-to-end 
+
+Video version : https://youtu.be/04z2M_Nv_Rk
+
+Text version : https://medium.com/@urvvil08/andrej-karpathys-llm-wiki-create-your-own-knowledge-base-8779014accd5
+
+
+9d ago
+Can it be useful / possible, to combine it with RAG?
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+9d ago
+Yeah 100%, and honestly I think the hybrid is where this actually be OP, I am also going through this hybrid approach will  if i get something interesting.
+
+
+
+Chance-East-1510
+•
+9d ago
+And what do you think about local use?
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+9d ago
+local use means running LLM locally and using that to compile ? please explain more :)
+
+
+
+
+
+u/Cosmonan avatar
+Cosmonan
+•
+8d ago
+I have been using claude to compile the wiki, and local to ask questions / chat about it. It's been doing pretty good.
+
+
+
+Chance-East-1510
+•
+7d ago
+I mean every step, the complete setup, off grid.
+
+
+
+
+
+RegayYager
+•
+8d ago
+Are you familiar with Ars-,contexta ? I’ll check out your work, the system I mentioned is what I’m currently using and it’s phenomenal.
+
+Overall have you felt any cognitive offloading due to this system you built? I have TBI and sleep apnea so I use Claude/obsidian as a way to help me stay organized and productive.
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+8d ago
+yes cognitive offloading is noticeable atleast in my case i am kind of guy who want to learn about various things at a time not even related but can not just stick to one. context rebuilding is too cool when you come back to a topic after some time also i feel like i know something was relavant to this but sometimes can not point out this is very good at this :)
+
+
+
+Genie-Tickle-007
+•
+9d ago
+The hallucination point is the one I'd expand. "Baked in as facts" is actually the scary part at scale.
+
+With RAG, a bad chunk surfaces at query time where you can catch it, fix the source, and re-embed. The error is contained.
+
+With LLM Wiki, a wrong summary on ingest propagates into linked pages, gets cross-referenced, and compounds. By the time someone notices the error, it's structural. The lint step is non-negotiable, and it needs to be continuous, not just at ingest.
+
+For personal research, this is manageable. For anything where someone acts on the output, this asymmetry matters a lot.
+
+
+
+
+u/Chippppppy avatar
+Chippppppy
+•
+8d ago
+If the source for RAG is from a reliable, accurate, original source, then we can rest assure that LLM ingested an accurate source via RAG.
+
+Having LLM summarise a source into a wiki exposes the probability that the output is not entirely accurate and true to the meaning of the original source. The summarised wiki will be what LLM thinks the content is about, not what is the actual content.
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+8d ago
+Will try it few days and let you know also many people are using it will check
+
+
+
+
+u/pietjepukspam avatar
+pietjepukspam
+•
+9d ago
+Could it also be self healing at some point? If new sources point in another direction ?
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+8d ago
+People are running lint almost every day or every other day
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+9d ago
+agreed
+
+
+ChatEngineer
+•
+7d ago
+Great writeup — the hallucination-baked-in point is the real tension. One approach I've found helpful is running a secondary "audit pass" after ingest: a cheaper model (or even the same one at lower temperature) reviews each generated wiki page against the original source and flags contradictions. It doesn't eliminate the problem but catches the most dangerous cases where the wiki asserts something the source never said. For the scale question, a hybrid approach works well too — use LLM Wiki for your curated core (~50-200 sources) and fall back to RAG for the long tail of less critical docs. The two aren't mutually exclusive.
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+6d ago
+Great ideas for audit pass I will try 😊
+
+
+
+u/MacroKong avatar
+MacroKong
+•
+5d ago
+I do same but a triple check audit
+
+
+stealthagents
+•
+5d ago
+That's awesome you took the time to dive into it! The interlinked markdown idea is pretty clever, especially when it comes to pulling together connections that might not be obvious otherwise. I found the graph view super helpful too for visualizing how everything connects, it just makes the knowledge feel way more accessible.
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+4d ago
+•
+Edited 4d ago
+agreed LLM Wiki is awesome "how everything connects" is the part i like most too bro
+
+
+
+
+u/simondueckert avatar
+simondueckert
+•
+4d ago
+Did anyone try to use OpenCode and a local LLM instead of Claude Code? 🤔
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+1d ago
+There are people in this comment section who have not me but they have find new ways to optimize this too.
+
+
+
+1
+
+
+
+
+
+
+
+
+
+SprintSingh
+•
+9d ago
+Could you explain what do you mean by ingest is expensive?
+
+In my experience I noticed that having a properly maintained global index + folder specific index files was the key to have a healthy Wiki overtime. This also ensured that the entire setup (ingestion / search /retrieval ) is token efficient.
+
+Another important part that helped me curate my own Wiki was the front-matter. I customised it for my own needs. Every folder in my Wiki while follows the same format also contains folder specific attributes.
+
+2 points that I want to highlight is the Agent Memory and Decision Making. I make sure that every important decision the LLM is making is also recorded as a .md file and it maintains its own index file. At the same time, once this decision is approved by me (based on some specific use-cases), I make sure to add it to open memory. I am maintaining it in 2 stages: Long Term Memory and Short Term Memory. This post will become too long to explain that but for maintaining this along with mark down files , I also use the mem0’s open memory.
+
+Happy to  more on how to have a more optimised version of the Wiki.
+
+
+
+
+5
+
+
+
+
+
+
+
+
+
+decreed_it
+•
+9d ago
+I’d greatly appreciate hearing more
+
+
+
+
+2
+
+
+
+
+
+
+
+
+
+SprintSingh
+•
+9d ago
+•
+Edited 9d ago
+Ofcourse would love to.
+
+Decisions: LLM struggle with decision making because they lack context and have no memory of the earlier decisions they made or decisions that you made with no documentation. And even with the Wiki, that problem remains the same.
+
+Hence, allowing the Agent to maintain a Decision log as part of the Wiki seemed to be the best possible move keeping the setup lean. So, every decision made (either autonomously or manually approved by the human) is logged. While the agent can consider every action taken as a Decision, this is where curating the Agent (Claude.md / Skill.md / Rule.md) becomes essential. Do not use a generic one. I repeat do not use a generic one but spend some time to curate or refine for your own use case or purpose. It might feel like a slow start, but will save you a ton of time in the long run.
+
+2. Memory: Despite having the decision log available to the agent, the context window of the best models is about 200k tokens where they work efficiently despite the claims of 1M tokens and above. This is called context rot. So longer the context, greater the rot. Hence. It is essential to have the strategy to ensure our Wiki doesn’t rot. For this I introduced short term and long term memory.
+
+For example: Every architectural decision I take for a project or repository , goes into the short term memory while any changes to the Wiki goes to the long term memory. Short term memory lives in the Wiki while long term memory lives in the cloud with mem0 accessed using MCP.
+
+Why this is important is because like a human, agent should be aware of the recent stuff being worked upon while keeping the important stuff as back of the mind with long term memory. But unlike humans, we have an advantage here with the ability to have infinite information. Therefore any memory / decisions belonging to the projects I finish or have not worked upon for a while is moved to Archive memory / Archive decisions. So that if you ever come back to work on it, there is still enough reference available to not start from scratch.
+
+3. Assets: Most important parts of the wiki. Any research paper / article or a book is part of the assets. Assets have their own index and every asset comes with a summarised .md file which helps the agent to get the context quickly without having to analyse the asset every time. While this is easy for smaller documents, it is a pain for large books (you as a student would have books that you want as part of the wiki). In that case, I use another EBook MCP, which is easier to parse compared to this large block of binary PDF file.
+
+On top of that I created custom Wiki commands like:
+
+a. /sync: Thats syncs my work between Wiki and Notion using Notion MCP.
+
+b. /health: It checks any broken links or connections, any missing indexing or any unavailable entity which should be available.
+
+c. /meditate: Following the human analogy of cleansing your mind, this helps remove stale memories, identifies any conflicting decisions and alerts the human about it, alerts about failing MCP connections and so on. This is like elevate mode for the Agent.
+
+With this setup in place, I can also say that it is not required to have the best and latest model as the brain. Any good model would work very well with it. I tested it with Google Gemini CLI, Claude Code, Codex and even locally running Qwen models.
+
+I hope this gives a good perspective on my setup and is valuable to anyone interested✌🏼
+
+
+
+
+3
+
+
+
+
+
+
+
+
+
+u/rajkaj123 avatar
+rajkaj123
+•
+7d ago
+/medidate is a fantastic skill! I really love your approach.
+
+Do you have linting (as per karpathy’s gist) execute as a part of that skill or is it independent? How do you achieve continuity? Hooks etc?
+
+Would love to hear more. Appreciate all the insights! 😁
+
+
+
+1
+
+
+
+
+
+
+
+
+
+LumpyWelds
+•
+5d ago
+I like most of what was said, but before investing into any memory system, have a way to test them for hallucinations.
+
+https://github.com/MemTensor/HaluMem
+
+HaluMem is an open benchmark for hallucinations in memory systems. It includes some rankings, but as they are static just consider it as reference for comparisons.
+
+Those rankings are not comprehensive and are just a snapshot in time. For example, Openmemory (mem0's open source version) isn't listed, and even if it was, it's in the middle of a rewrite.
+
+
+
+1
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+9d ago
+When I said ingest is expensive, I was comparing it to pure RAG ingestion on the same source. Very nice insights let me get free for the day and read then will discuss. Happy to learn more from you on this bro 😊
+
+
+
+1
+
+
+
+
+
+
+
+
+
+sintmk
+•
+9d ago
+Have been using something like this as my natural workflow and I can account for the quality it elicits. Anything to make your model more aligned with what you want it to infer from.
+
+
+
+
+2
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+9d ago
+I’d greatly appreciate hearing more about your workflow from high level atleast
+
+
+
+
+1
+
+
+
+
+
+
+
+
+
+sintmk
+•
+9d ago
+I appreciate the engagement! This is too cool of a space to not imho.
+
+I've been trying to do my best to distill my thoughts on it, but for now I'm having about as hard a time as I do when I have to describe a recipe for a meal I prepared. Where I think I do feel confident is that it was very helpful to me to consider the system I was collaborating in and how the data plumbing worked. Once I got a grip on tokenization and memory state, I was able to reason through memory persistence guardrails and environmental rules.
+
+The end result is a small four file bundle I deploy to each project that essentially boots the project with three classes of information, initial, global, and local. The long of it being that I treat each project like a bootable operating system with system parameters. I group the sessions accordingly and can persist across devices and network types. Typing this now I'm actually due an efficiency gap analysis lol.
+
+I hope this helps at least!
+
+
+
+
+2
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+8d ago
+quite intresting " I treat each project like a bootable operating system with system parameters" never though like that very nice bro:)
+
+
+
+
+2
+
+
+
+
+
+
+
+
+
+sintmk
+•
+8d ago
+Bro, if that helps, that makes my day. Not just lip service, I'm big on open source. It's slightly abstract, but that's what made the capability jump that came after possible for me. Because I'm a caveman with git commit message quality and repo cleanliness, I normally remain on private. However, if you poke at the idea, I'd love to get your notes. Im happy to  the framework as well, just need to tidy up lol
+
+
+
+
+2
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+8d ago
+Very nice bro 😊 happy to learn
+
+
+
+1
+
+
+
+
+
+
+
+
+
+sintmk
+•
+4d ago
+fwiw, got this all cleaned up
+
+https://github.com/ThePghCid/dmf please feel free to hmu with any questions or comments.
+
+
+
+1
+
+
+
+
+
+
+
+
+
+u/singh_taranjeet avatar
+singh_taranjeet
+•
+9d ago
+The cross-document synthesis point is exactly where this shines. RAG can't build those connections because chunks are isolated at query time. Curious if you noticed any patterns in which document types benefited most from the wiki structure versus ones that didn't?
+
+
+
+
+2
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+9d ago
+i am also curious not went deep but as for now i found out benefited most from online sources that
+
+Essays and opinion pieces anything making an argument.
+
+Research papers in adjacent subfields.
+
+Personal notes, journal entries, meeting transcripts.
+
+
+
+
+1
+
+
+
+
+
+
+
+
+
+u/singh_taranjeet avatar
+singh_taranjeet
+•
+8d ago
+Personal notes and meeting transcripts make sense too, that content is usually buried in silos and only clicks when you see it next to something else.. That's where synthesis actually earns its keep.
+
+We think about this a lot with mem0. Memory only gets valuable when it compounds over time, not just at the moment of ingest. Did you try feeding it new sources over a few weeks to see how the connections shifted, or was this more of a one-shot experiment??
+
+
+
+
+2
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+8d ago
+I am trying that wilth my few topic i am learning recently till now it connects like a charm and if it is not able to do it linting takes care next time its quite cool but i can tell you after a month if it is still same
+
+
+
+
+2
+
+
+
+
+
+
+
+
+
+u/singh_taranjeet avatar
+singh_taranjeet
+•
+7d ago
+Perfect. Keep us posted!
+
+
+
+1
+
+
+
+
+
+
+
+
+
+u/Legal-Pudding5699 avatar
+Legal-Pudding5699
+•
+9d ago
+The hallucination-baked-in-as-fact problem is genuinely underrated as a risk.
+
+With RAG you can trace a bad answer back to a bad chunk, but with a wiki the error gets cited by three other pages before you even notice it.
+
+
+
+
+2
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+9d ago
+agreed
+
+
+
+1
+
+
+
+
+
+
+
+
+
+
+Relative-Purchase624
+•
+9d ago
+u/Fragrant_Scale6456 avatar
+Fragrant_Scale6456
+•
+9d ago
+Very cool thanks for sharing this. I've been using claude to help me with an implementation as well. I'm using open-webui, markitdown, and an http server to serve the wiki and handle large document uploads. I had to do a lot of iterations on my wiki tool in open-webui to get ingestion to not choke on large pdfs of books and also to get it to process at acceptable speeds. I've just now got it properly ingesting large documents and havent really had time to test its cross source synthesis capabilities. I'm using the new qwen 3.6 moe model and it seems to work pretty well on my 5090.
+
+What hardware setup and software are you using?
+
+
+
+
+2
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+8d ago
+bro i am using claude subscription i do not have a good GPU also i have little knowledge bases very few now but it does not use many tokens except Ingest part my 5-10 % limit goes into this :) very interested to here about how your setup is doing with your knowledge base .please let me know :)
+
+
+
+
+1
+
+
+
+
+
+
+
+
+
+u/Fragrant_Scale6456 avatar
+Fragrant_Scale6456
+•
+8d ago
+I read your blog post and now understand you were doing it on the cloud, for some reason I thought your post was in locallama lol.
+
+For my setup I'm using llama.cpp, open-webui, and markitdown. Your post was actually very helpful, this morning I went to qwen3.6 on the web and basically said:
+
+here's my hardware specs <specs>. I'm using llama.cpp with model <qwen3.6 filename> and configuration flags <config>. I am also using open-webui and markitdown.
+
+I want you to review the following 2 links in depth and develop a system for me to implement the karpathy wiki on a locally hosted LLM system as described above: <your blog and the karpathy gist>
+
+...
+
+Ingest takes around a minute or three for a 200page finance reference text. One thing I'm still working on understanding how to handle is a lot of my texts have heavy use of tables and graphs and I want to make sure this information is properly analysed and stored in the knowledge base but I haven't gotten to looking into image recognition yet.
+
+On my 5090 i get around 200tokens/sec with qwen3.6 and asking it to do things like "compare the approaches to financial analysis of situation X by authors A B C. tell me points of agreement and disagreement between approaches. Suggest a recommended approach for situation Z" takes around 20-30sec to give me 6 pages or so of a decent start to an analytical approach. I only have around 10 books ingested into my wiki so far I'm still working on refining the process but it seems promising. Thanks for your post it was very interesting.
+
+
+
+2
+
+
+
+
+
+
+
+
+
+En-tro-py
+•
+9d ago
+Ingest is expensive. Great for curated personal small scale knowledge, painful for an enterprise doc dump.
+
+I've stayed away from this specifically because LLM ingestion is expensive and even with current SOTA models still risks hallucinations.
+
+What is the relative cost? I have ~15k research papers to sort through and would still be combining with RAG.
+
+
+
+
+2
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+8d ago
+with these much papers it should not be feasible :) token are increasing with size, i have pro claude subscription and my 2-3 knowlege bases take about 5-7 % of limit with opus 4.7
+
+
+
+1
+
+
+
+
+
+
+
+
+
+Used_Accountant_1090
+•
+7d ago
+complex context infra is not one or the other. RAG is also shit at scale tbh. it is a full pipeline of things from ingestion to retrieval to context improvement. i have spent enough time with it and built a hybrid system which has Karpathy style wiki but backed by a complex infra. open source. see https://github.com/nex-crm/wuphf
+
+
+
+
+2
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+6d ago
+Let me get free and check it out also can you explain how rag is shit at scale if you have experienced it and how it happened i am curious
+
+
+
+
+1
+
+
+
+
+
+
+
+
+
+Used_Accountant_1090
+•
+6d ago
+•
+Edited 6d ago
+I built an AI-native CRM company backed by HubSpot and Freshworks founders and ended up building a whole context graph infra to support it. I know. The whole commentary on RAG is too long for this comment, but in short, textual similarity doesn't lead to intelligent answers and leads to context pollution at scale. Graphs are great but too slow. Context needs a full harness system just like agents.
+
+
+
+1
+
+
+
+
+
+
+
+
+
+u/ArthurCastus avatar
+ArthurCastus
+•
+5d ago
+this is simply great
+
+
+
+
+2
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+5d ago
+It is follow karpathy on twitter bro he is too good
+
+
+
+1
+
+
+
+
+
+
+
+
+
+crumpy_panda
+•
+5d ago
+From glancing at this idea, repowise seems to do exactly this.. even with post commit updates to the graph.
+
+https://github.com/repowise-dev/repowise
+
+If you manage your info with a git repo this would get you quite far to a imho good implementation.
+
+
+
+
+2
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+4d ago
+yes its awesome :)
+
+
+
+
+1
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+4d ago
+let me try
+
+
+
+1
+
+
+
+
+
+
+
+
+
+u/Clawling avatar
+Clawling
+•
+4d ago
+The baked-in hallucination point is so underrated. Curation and linting really make or break this workflow.
+
+
+
+
+2
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+1d ago
+agreed
+
+
+
+1
+
+
+
+
+
+
+
+
+
+SudhE3005
+•
+4d ago
+how did u do achieve proper indexing?
+
+
+
+
+2
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+1d ago
+LLM does it you can use gist basically it will help in that
+
+
+
+1
+
+
+
+
+
+
+
+
+
+u/knlgeth avatar
+knlgeth
+•
+3d ago
+Saw something similar done by a MIT prof, seems inspired by karpathy: https://github.com/atomicmemory/llm-wiki-compiler
+
+
+
+
+2
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+1d ago
+let me check bro :)
+
+
+
+2
+
+
+
+
+
+
+
+
+
+u/ZookeepergameFit5787 avatar
+ZookeepergameFit5787
+•
+3d ago
+First I think it's important what we mean by memory here. Are we expecting it to be flawless like we associate with traditional computer or are we expecting it to be more human like? Because actually the hallucination issue is closer to a human experience - we remember things wrong all the time.
+
+Both rag + knowledge graph seems a good hybrid. Just do both. If system prompt or memory.md ensures to say that all knowledge memory should be validated before being trusted, it's just like a lot of how humans remember things. Or set a Cron to "fact check" validation loop overnight - different model, very capable, low hallucination rate, maybe loop through another model before updating .. then periodic reviews on Cron with cascading update schedule (older get reviewed less often). I think it would work. It wouldn't be cheap though.
+
+We are entering the systemization of LLMs now. Intelligence is solved. Context length is solved. Efficiency and speed continues to improve. Next up are hallucinations, memory and product. It'll arrive just in time for mass robotic deployments
+
+
+
+
+2
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+1d ago
+conpletely agree i am going through the hybrid approach now was not able to do it as did not have much spare time but quite curious how it will do in large scale
+
+
+
+
+2
+
+
+
+
+
+
+
+
+
+u/ZookeepergameFit5787 avatar
+ZookeepergameFit5787
+•
+1d ago
+I use hermes profiles feature for scaling as each profile (essentially its own agent that can run in paralel via Hermes) has its own soul.md, own memory stack. I guess if you are going full enterprise I would run individual hermes/agents in their own docker with read/write PATH restrictions for inbox/outbox management to the d workspace. It quickly becomes a full time job though.
+
+
+
+1
+
+
+
+
+
+
+
+
+
+u/SoluLab-Inc avatar
+SoluLab-Inc
+•
+2d ago
+The scary part is hallucinations turning into permanent knowledge. At least with RAG, mistakes don’t get stored and reused.
+
+
+
+2
+
+
+
+
+
+
+
+
+
+KTAXY
+•
+9d ago
+OP, the formatting is so off-putting. what did you do to mess it up so much.
+
+
+
+
+4
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+9d ago
+I was typing on phone so 🤣. I did some formatting
+
+
+
+
+0
+
+
+
+
+
+
+
+
+
+riceinmybelly
+•
+9d ago
+Nah it’s fine, don’t worry about it
+
+
+
+2
+
+
+
+
+
+
+
+
+
+u/AutoModerator avatar
+AutoModerator
+MOD
+•
+10d ago
+Thank you for your submission, for any questions regarding AI, please check out our wiki at https://www.reddit.com/r/ai_agents/wiki (this is currently in test and we are actively adding to the wiki)
+
+I am a bot, and this action was performed automatically. Please contact the moderators of this subreddit if you have any questions or concerns.
+
+
+
+1
+
+
+
+
+
+
+
+
+
+u/fowlscotch avatar
+fowlscotch
+•
+9d ago
+Been considering applying this for an academic research project I'm working on, but one general question - if I have multiple, distinct topics I'm researching, is the idea I would create seperate LLM Wiki implementation for each? Or create one implementation with the assumption that there might be several semi-isolated "islands" as a result? My impression is the former would be a better practice, especially given the suggested limitation on source files.
+
+
+
+
+1
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+9d ago
+Your instinct toward separate wikis is right. how related are these topics, and do you expect them to stay unrelated?
+
+
+
+
+1
+
+
+
+
+
+
+
+
+
+u/fowlscotch avatar
+fowlscotch
+•
+9d ago
+That's what I'm trying to weigh. They are largely distinct, but I can also see potential for interconnection - and finding/surfacing those is one of the key value points of this approach. But the scalability issue concerns me. Won't be a problem right now, but could be a big issue down the road as the raw sources grow.
+
+
+
+
+2
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+8d ago
+yes both of this problems i am facing right now also i think with time we should have some mechanism to merge knowledge bases or atleast a part of one to another just to see connections, will experiment once my bases are big
+
+
+
+1
+
+
+
+
+
+
+
+
+
+u/tracagnotto avatar
+tracagnotto
+•
+5d ago
+Karpathy llm wiki is the dumbest shit ever.
+Jesus. I tried to ingest 20 articles about a programming language. It didn't even go halfway and consumed 2 full claude sessions.
+
+It's good if you want to waste your claude subscription, for that is very good
+
+
+
+
+1
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+5d ago
+Can i get some info what subs you have and what model you used?
+
+
+
+
+1
+
+
+
+
+
+
+
+
+
+u/tracagnotto avatar
+tracagnotto
+•
+5d ago
+pro, used opus 4.7 in high thinking because I wanted high quality since the material was complex. Nonetheless, using Sonnet didn't go much further
+
+
+
+
+1
+
+
+
+
+
+
+
+
+
+u/OrewaDeveloper avatar
+OrewaDeveloper
+OP
+•
+4d ago
+bro agreed opus 4.7 is usable in pro version with high thinking the company itself is not sure whether that tier should remain as new models uses so much token and its limits are so restrictive https://x.com/TheAmolAvasare/status/2046724659039932830?s=20
+why you are blaming LLM wiki for lack of resources also I am not telling there can not be flows I am myself trying it out only (also as it is open ended people have come up with patterns to make it more efficient in terms of quality in response as well as tokens) genuenly want to see if this works atleast for my small scale learning/research
+
+
+
+1
+
+
+
+
+
+
+
+
+
+
+[deleted]
+•
+8d ago
+Community Info Section
+r/AI_Agents
+Join
+AI Agents
+A place for discussion around the use of AI Agents and related tools. AI Agents are LLMs that have the ability to "use tools" or "execute functions" in an autonomous or semi-autonomous (also known as human-in-the-loop) fashion. Follow our event calendar: https://lu.ma/oss4ai Join us on Discord! https://discord.gg/6tGkQcFjBY
+

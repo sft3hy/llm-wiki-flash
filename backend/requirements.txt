@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+python-multipart
+sqlalchemy
+chromadb
+GitPython
+pydantic
+pydantic-settings
+python-dotenv
+markdown
+PyYAML
+langchain-groq
+langchain-ollama
+langchain-chroma
+langgraph
+sse-starlette
+langchain-text-splitters
