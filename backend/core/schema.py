@@ -6,7 +6,9 @@ Derived from architecture-change.md SCHEMA.md section.
 
 # ─── The Compiler Prompt ───────────────────────────────────────────────
 # Used when creating or updating wiki pages from raw documents.
-COMPILER_SYSTEM_PROMPT = """You are a Knowledge Engineer operating under strict Wiki Governance rules.
+COMPILER_SYSTEM_PROMPT = """IMPORTANT: PROVIDE DIRECT RESPONSES ONLY. DO NOT INCLUDE ANY INTERNAL MONOLOGUES, THINKING, OR <thought> TAGS.
+
+You are a Knowledge Engineer operating under strict Wiki Governance rules.
 
 DIRECTORY RULES:
 - /raw/: Immutable source files. Never modify these.
@@ -43,26 +45,23 @@ status: stub | stable | conflicting
 ---"""
 
 # ─── Entity Extraction Prompt ──────────────────────────────────────────
-ENTITY_EXTRACTION_PROMPT = """Analyze the following document and extract ALL distinct concepts, 
-entities, people, projects, and topics that deserve their own wiki page.
+ENTITY_EXTRACTION_PROMPT = """Extract key concepts from this text. For each concept output one line in this EXACT format:
 
-For each entity, provide:
-1. A kebab-case filename (e.g., "machine-learning" not "Machine Learning")
-2. A brief one-line description
-3. Whether this is a NEW concept or an UPDATE to an existing one
+ENTITY: kebab-case-name | one-line description | NEW
 
-Document:
+Example output:
+ENTITY: machine-learning | A subset of AI that learns from data | NEW
+ENTITY: neural-network | Computing system inspired by biological brains | NEW
+ENTITY: deep-learning | Neural networks with many layers | NEW
+
+Now extract concepts from this text:
 {content}
 
-Existing wiki pages (check against these):
+Existing wiki pages (use UPDATE instead of NEW if the concept already exists):
 {existing_pages}
 
-Return your response as a structured list in this exact format:
-ENTITY: <kebab-case-name> | <one-line-description> | <NEW or UPDATE>
-...
+Output ONLY lines starting with "ENTITY:". No other text."""
 
-Only list entities with substantial, durable knowledge. Skip ephemeral noise 
-(greetings, scheduling, casual chat)."""
 
 # ─── Page Synthesis Prompt ─────────────────────────────────────────────
 SYNTHESIS_PROMPT = """You are a Wiki Compiler. Strictly adhere to the SCHEMA rules.
@@ -100,17 +99,24 @@ File list and summaries:
 {file_summaries}"""
 
 # ─── Filtering Prompt ──────────────────────────────────────────────────
-FILTERING_PROMPT = """Analyze the incoming text. Determine if it contains 
-'Durable Knowledge' (facts, processes, decisions, technical details) or 
-'Ephemeral Noise' (casual chat, scheduling, greetings, filler).
+FILTERING_PROMPT = """You are a strict data classifier. Your ONLY job is to output exactly one word: 'DURABLE' or 'NOISE'.
+
+DEFINITION OF DURABLE KNOWLEDGE:
+- Formal, academic, or informative text
+- Facts, processes, definitions, history, concepts, technical details
+- ANY content that provides real-world information (like a Wikipedia article)
+
+DEFINITION OF NOISE:
+- "Hello, how are you?"
+- "Let's meet at 5pm."
+- Gibberish or purely conversational filler
+
+Analyze the following text. If it contains ANY information, facts, or concepts, you MUST output 'DURABLE'. Only output 'NOISE' if it is purely conversational filler.
 
 Text:
 {content}
 
-Respond with exactly one of:
-DURABLE: <brief reason why this is worth compiling>
-NOISE: <brief reason why this should be skipped>"""
-
+Output EXACTLY 'DURABLE' or 'NOISE'. Do not add any other text, reasoning, or punctuation."""
 # ─── Frontmatter Template ─────────────────────────────────────────────
 FRONTMATTER_TEMPLATE = """---
 title: "{title}"

@@ -23,10 +23,22 @@ class ModelConfig:
 # All supported models
 AVAILABLE_MODELS: List[ModelConfig] = [
     ModelConfig(
-        model_id="gemma4:e4b",
-        display_name="Gemma 4 E4B",
+        model_id="auto-smart",
+        display_name="Smart (Auto Tiering)",
+        provider="system",
+        description="Automatically selects the best model for each task (Gemma for small, Groq for hard)"
+    ),
+    ModelConfig(
+        model_id="llama3.2:1b",
+        display_name="Llama 3.2 1B (Fast)",
         provider="ollama",
-        description="Google's Gemma 4 — fast local inference via Ollama"
+        description="Meta's Llama 3.2 — ultra-fast for local filtering and extraction"
+    ),
+    ModelConfig(
+        model_id="gemma4:e4b",
+        display_name="Gemma 4 Medium",
+        provider="ollama",
+        description="Google's Gemma 4 — balanced quality and speed"
     ),
     ModelConfig(
         model_id="llama-3.3-70b-versatile",
@@ -58,7 +70,7 @@ class Settings(BaseSettings):
     RAW_DIR: str = os.getenv("RAW_DIR", "data/raw")
     WIKI_DIR: str = os.getenv("WIKI_DIR", "data/wiki")
 
-    DEFAULT_MODEL: str = "gemma4:e4b"
+    DEFAULT_MODEL: str = "llama3.2:1b"
 
     class Config:
         env_file = ".env"

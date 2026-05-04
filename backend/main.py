@@ -8,11 +8,15 @@ import uvicorn
 from core.ingest import IngestEngine
 from core.benchmarker import Benchmarker
 from core.lint import LintEngine
-from core.llm_provider import get_llm
+from core.llm_provider import get_llm, call_with_fallback
 from config import settings, AVAILABLE_MODELS
 from utils.progress import progress_manager
 from sse_starlette.sse import EventSourceResponse
+import logging
 from langchain_core.messages import HumanMessage, SystemMessage
+
+logger = logging.getLogger("llm-wiki")
+logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="LLM Wiki API")
 
@@ -77,36 +81,20 @@ async def progress():
 @app.post("/chat")
 async def chat(request: ChatRequest):
     try:
-        llm = get_llm(request.model)
-
-        # Build wiki context: read index.md so the LLM knows what's available
-        wiki_context = ""
-        index_path = os.path.join(WIKI_DIR, "index.md")
-        if os.path.exists(index_path):
-            with open(index_path, "r") as f:
-                wiki_context = f.read()
-
-        messages = [
-            SystemMessage(content=f"""You are a helpful assistant for the LLM Wiki knowledge base. 
-You have access to the user's compiled wiki. Answer concisely and accurately.
-Use [[wikilinks]] when referencing wiki pages.
-
-Current Wiki Index:
-{wiki_context}""")
-        ]
-
-        for msg in request.history:
-            if msg['role'] == 'user':
-                messages.append(HumanMessage(content=msg['content']))
-            else:
-                messages.append(SystemMessage(content=msg['content']))
-
-        messages.append(HumanMessage(content=request.message))
-
-        response = await llm.ainvoke(messages)
-        return {"response": response.content}
+        from core.query import QueryEngine
+        engine = QueryEngine(WIKI_DIR)
+        
+        # We no longer need to manually construct the static wiki_context
+        # The qa_query method handles retrieving documents and sending them to the LLM
+        result = await engine.qa_query(
+            query=request.message,
+            history=request.history,
+            model_id=request.model
+        )
+        
+        return {"response": result["response"], "context": result["context"]}
     except Exception as e:
-        print(f"Chat error: {e}")
+        logger.error(f"Chat error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -138,6 +126,27 @@ async def ingest_source(
     }
 
 
+# ─── Raw Management ───────────────────────────────────────────────────
+
+@app.get("/raw", response_model=List[str])
+async def list_raw_sources():
+    """List all raw source documents."""
+    if not os.path.exists(RAW_DIR):
+        return []
+    return [f for f in os.listdir(RAW_DIR) if not f.startswith(".")]
+
+
+@app.delete("/raw/{filename}")
+async def delete_raw_source(filename: str):
+    """Delete a raw source document."""
+    file_path = os.path.join(RAW_DIR, filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Source not found")
+    
+    os.remove(file_path)
+    return {"status": "success", "filename": filename, "message": "Raw source deleted"}
+
+
 # ─── Compare ──────────────────────────────────────────────────────────
 
 @app.post("/compare")
@@ -162,6 +171,59 @@ async def run_lint(model: Optional[str] = Query(None)):
     lint_engine = LintEngine(WIKI_DIR, model_id=model)
     results = await lint_engine.run_full_lint()
     return results
+
+
+@app.post("/meditate")
+async def meditate(model: Optional[str] = Query(None)):
+    """
+    Trigger global agentic maintenance (Karpathy-style meditation).
+    Scans RAW_DIR for unprocessed files and synchronizes them.
+    """
+    if not os.path.exists(RAW_DIR):
+        return {"status": "success", "message": "No raw files to process.", "processed": 0}
+
+    # 1. Get list of all raw files
+    raw_files = [f for f in os.listdir(RAW_DIR) if not f.startswith(".")]
+    
+    # 2. Get list of already processed files from log.md
+    log_path = os.path.join(WIKI_DIR, "log.md")
+    processed_files = set()
+    if os.path.exists(log_path):
+        with open(log_path, "r") as f:
+            log_content = f.read()
+            for raw_file in raw_files:
+                if raw_file in log_content:
+                    processed_files.add(raw_file)
+                    
+    pending_files = [f for f in raw_files if f not in processed_files]
+    
+    if not pending_files:
+        return {"status": "success", "message": "Wiki is already up to date.", "processed": 0}
+        
+    # 3. Process each pending file
+    engine = IngestEngine(RAW_DIR, WIKI_DIR, model_id=model)
+    results = []
+    for filename in pending_files:
+        res = await engine.process_file(filename)
+        results.append(res)
+        
+    return {
+        "status": "success", 
+        "message": f"Agentic maintenance complete. Synced {len(pending_files)} documents.",
+        "processed": len(pending_files),
+        "details": results
+    }
+
+
+@app.get("/log")
+async def get_wiki_log():
+    """Return the recent compilation/maintenance log."""
+    log_path = os.path.join(WIKI_DIR, "log.md")
+    if os.path.exists(log_path):
+        with open(log_path, "r") as f:
+            # Read first 1000 lines or so
+            return {"content": f.read()}
+    return {"content": "No log.md found. Ingest your first document to start the log."}
 
 
 # ─── Wiki CRUD ─────────────────────────────────────────────────────────
@@ -201,11 +263,12 @@ async def update_wiki_page(filename: str, request: WikiEditRequest):
 @app.delete("/wiki/{filename}")
 async def delete_wiki_page(filename: str):
     """Delete a wiki page (used during merge operations)."""
-    file_path = os.path.join(WIKI_DIR, filename)
-    if not os.path.exists(file_path):
+    engine = IngestEngine(RAW_DIR, WIKI_DIR)
+    success = engine.remove_wiki_page(filename)
+    
+    if not success:
         raise HTTPException(status_code=404, detail="Page not found")
-
-    os.remove(file_path)
+        
     return {"status": "success", "filename": filename, "message": "Page deleted"}
 
 

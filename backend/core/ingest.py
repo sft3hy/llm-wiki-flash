@@ -6,7 +6,7 @@ from datetime import datetime
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from core.llm_provider import get_llm
+from core.llm_provider import get_llm, call_with_fallback, TaskComplexity
 from core.schema import (
     COMPILER_SYSTEM_PROMPT,
     ENTITY_EXTRACTION_PROMPT,
@@ -20,6 +20,7 @@ from utils.progress import progress_manager
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import asyncio
 import logging
+from core.query import QueryEngine
 
 # Configure detailed logging
 logging.basicConfig(
@@ -34,30 +35,28 @@ class IngestEngine:
     def __init__(self, raw_dir: str, wiki_dir: str, model_id: str = None):
         self.raw_dir = raw_dir
         self.wiki_dir = wiki_dir
-        self.model_id = model_id or settings.DEFAULT_MODEL
+        self.model_id = model_id # If None, we use tiered logic
         os.makedirs(raw_dir, exist_ok=True)
         os.makedirs(wiki_dir, exist_ok=True)
 
         self.git_manager = GitManager(wiki_dir)
 
-        # Get LLM via provider factory
-        self.llm = get_llm(self.model_id)
-
         # Chunking strategy for large documents
         self.splitter = RecursiveCharacterTextSplitter(
-            chunk_size=6000,
-            chunk_overlap=300,
+            chunk_size=2000,
+            chunk_overlap=200,
         )
+        self.query_engine = QueryEngine(wiki_dir)
 
-    async def _call_llm(self, messages: list) -> str:
-        """Invoke the LLM with a list of messages and return the content string."""
-        response = await self.llm.ainvoke(messages)
-        return response.content
-
-    async def _call_chain(self, chain, inputs: dict) -> str:
-        """Invoke a LangChain chain (prompt | llm) and return the content string."""
-        response = await chain.ainvoke(inputs)
-        return response.content
+    async def _call_llm(self, messages: list, task_type: str) -> str:
+        """Invoke the LLM with fallback logic."""
+        result = await call_with_fallback(messages, task_type, model_id=self.model_id)
+        if not result or not result.strip():
+            logger.warning(f"  ⚠️ LLM returned empty result for {task_type}")
+            return ""
+        
+        logger.info(f"    ✅ LLM returned {len(result)} chars for {task_type}: {result[:50]}...")
+        return result
 
     def _get_existing_pages(self) -> List[str]:
         """List all .md files in the wiki directory."""
@@ -76,6 +75,8 @@ class IngestEngine:
     def _write_wiki_page(self, filename: str, content: str):
         """Write content to a wiki page."""
         path = os.path.join(self.wiki_dir, filename)
+        abs_path = os.path.abspath(path)
+        logger.info(f"    💾 Writing to: {abs_path}")
         with open(path, "w") as f:
             f.write(content)
 
@@ -86,9 +87,9 @@ class IngestEngine:
         if len(content.strip()) < 50:
             return False, "Content too short to contain durable knowledge."
 
-        prompt = ChatPromptTemplate.from_template(FILTERING_PROMPT)
-        chain = prompt | self.llm
-        result = await self._call_chain(chain, {"content": content[:3000]})
+        prompt = FILTERING_PROMPT.format(content=content[:3000])
+        messages = [HumanMessage(content=prompt)]
+        result = await self._call_llm(messages, "filtering")
 
         is_durable = result.strip().upper().startswith("DURABLE")
         return is_durable, result.strip()
@@ -111,28 +112,55 @@ class IngestEngine:
             progress_manager.broadcast(f"Analyzing chunk {i+1}/{len(chunks)} for entities", progress_pct)
             logger.info(f"  🔍 Extracting entities from chunk {i+1}/{len(chunks)}")
 
-            prompt = ChatPromptTemplate.from_template(ENTITY_EXTRACTION_PROMPT)
-            chain = prompt | self.llm
-            result = await self._call_chain(chain, {
-                "content": chunk,
-                "existing_pages": existing_list,
-            })
+            prompt = ENTITY_EXTRACTION_PROMPT.format(
+                content=chunk,
+                existing_pages=existing_list,
+            )
+            messages = [HumanMessage(content=prompt)]
+            try:
+                result = await self._call_llm(messages, "extraction")
+            except Exception as e:
+                logger.error(f"  ❌ Error extracting entities from chunk {i+1}: {e}")
+                continue
 
-            # Parse the structured response
+            if not result:
+                continue
+
+            # Parse the structured response — handle multiple formats from small models
             for line in result.strip().split("\n"):
                 line = line.strip()
-                if line.upper().startswith("ENTITY:"):
-                    parts = line[7:].strip().split("|")
-                    if len(parts) >= 3:
+                # Remove leading bullets/numbers: "- ", "1. ", "* "
+                cleaned = re.sub(r'^[\-\*\d]+[\.\)\s]*\s*', '', line)
+                # Remove ENTITY: prefix if present
+                if cleaned.upper().startswith("ENTITY:"):
+                    cleaned = cleaned[7:].strip()
+                
+                # Try to parse "name | description | action" format
+                # More robust regex matching
+                # Example: "ENTITY: some-name | some description | NEW" or just "- some-name | desc"
+                match = re.search(r'([a-zA-Z0-9\-]+)\s*\|\s*(.*?)(?:\s*\|\s*(NEW|UPDATE))?$', cleaned, re.IGNORECASE)
+                if match:
+                    name = match.group(1).strip().lower()
+                    description = match.group(2).strip()
+                    action = match.group(3).strip().upper() if match.group(3) else "NEW"
+                else:
+                    parts = cleaned.split("|")
+                    if len(parts) >= 2:
                         name = parts[0].strip().lower().replace(" ", "-")
-                        # Clean up the name: remove .md if present, ensure kebab-case
                         name = re.sub(r'[^a-z0-9\-]', '', name)
-                        if name:
-                            all_entities.append({
-                                "name": name,
-                                "description": parts[1].strip(),
-                                "action": parts[2].strip().upper(),
-                            })
+                        description = parts[1].strip() if len(parts) > 1 else "" 
+                        action = parts[2].strip().upper() if len(parts) > 2 else "NEW"
+                    else:
+                        continue
+
+                if action not in ("NEW", "UPDATE"):
+                    action = "NEW"
+                    if name and len(name) > 1:
+                        all_entities.append({
+                            "name": name,
+                            "description": description,
+                            "action": action,
+                        })
 
         # De-duplicate entities by name
         seen = set()
@@ -158,38 +186,33 @@ class IngestEngine:
         else:
             existing_content_section = "This is a NEW page. Create it with proper YAML frontmatter."
 
-        # Extract relevant sections from raw content for this entity
-        # Use the LLM to find the relevant portions
-        extract_prompt = ChatPromptTemplate.from_template(
-            """Extract the portions of this document that are relevant to the concept "{entity_name}": {entity_description}
+        # Find a relevant chunk of the raw content (search for entity name)
+        entity_terms = entity['name'].replace('-', ' ').split()
+        relevant_chunk = ""
+        paragraphs = raw_content.split('\n\n')
+        for para in paragraphs:
+            para_lower = para.lower()
+            if any(term in para_lower for term in entity_terms):
+                relevant_chunk += para + "\n\n"
+                if len(relevant_chunk) > 3000:
+                    break
+        
+        # Fallback: use the entity description + first 2000 chars
+        if not relevant_chunk.strip():
+            relevant_chunk = f"{entity['description']}\n\n{raw_content[:2000]}"
 
-Document:
-{content}
-
-Return only the relevant text, preserving important details. If nothing is relevant, say "NO_RELEVANT_CONTENT"."""
-        )
-        chain = extract_prompt | self.llm
-        relevant_info = await self._call_chain(chain, {
-            "entity_name": entity["name"].replace("-", " "),
-            "entity_description": entity["description"],
-            "content": raw_content[:8000],  # Limit context window
-        })
-
-        if "NO_RELEVANT_CONTENT" in relevant_info.upper():
-            return ""
-
-        # Now synthesize the page
+        # Synthesize the page
         messages = [
             SystemMessage(content=COMPILER_SYSTEM_PROMPT),
             HumanMessage(content=SYNTHESIS_PROMPT.format(
                 entity_name=entity["name"].replace("-", " ").title(),
                 existing_content_section=existing_content_section,
                 source_id=source_id,
-                new_information=relevant_info,
+                new_information=relevant_chunk[:3000],
             )),
         ]
 
-        page_content = await self._call_llm(messages)
+        page_content = await self._call_llm(messages, "synthesis")
         return page_content
 
     # ─── Step 3: Update Index ──────────────────────────────────────────
@@ -312,10 +335,20 @@ Return only the relevant text, preserving important details. If nothing is relev
                     self._write_wiki_page(page_name, page_content)
                     pages_touched[page_name] = entity["description"]
 
+                    # Add to Chroma VectorStore
+                    self.query_engine.add_documents(
+                        chunks=[page_content],
+                        metadatas=[{"source": page_name}]
+                    )
+
                     if existing:
                         updated_pages.append(entity["name"])
                     else:
                         created_pages.append(entity["name"])
+                    
+                    # Periodic index update for better UI feedback
+                    if (len(created_pages) + len(updated_pages)) % 5 == 0:
+                        self._update_index(pages_touched)
             except Exception as e:
                 logger.error(f"  ❌ Error synthesizing {page_name}: {e}")
                 continue
@@ -353,3 +386,20 @@ Return only the relevant text, preserving important details. If nothing is relev
         )
 
         return summary
+
+    def remove_wiki_page(self, filename: str) -> bool:
+        """
+        Delete a wiki page and update the index/git repo.
+        """
+        path = os.path.join(self.wiki_dir, filename)
+        if os.path.exists(path):
+            os.remove(path)
+            logger.info(f"🗑️ Deleted wiki page: {filename}")
+            
+            # Update index (pass empty dict as no pages were 'touched' by synthesis)
+            self._update_index({})
+            
+            # Commit
+            self.git_manager.commit_changes(f"Delete wiki page: {filename}")
+            return True
+        return False

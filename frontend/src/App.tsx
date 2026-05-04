@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
-import { Book, FileText, Search, Settings, Upload, MessageSquare, Activity, LayoutGrid, Info, Cpu, Cloud } from 'lucide-react';
+import { Book, FileText, Search, Settings, Upload, MessageSquare, Activity, LayoutGrid, Info, Cpu, Cloud, Trash, Clock, Brain } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import KnowledgeGraph from './components/KnowledgeGraph';
@@ -11,7 +11,7 @@ import ModelSelector from './components/ModelSelector';
 
 const API_BASE = "http://localhost:8000";
 
-type ViewType = 'wiki' | 'chat' | 'settings' | 'meditation' | 'graph';
+type ViewType = 'wiki' | 'chat' | 'settings' | 'maintenance' | 'graph';
 
 interface Model {
   model_id: string;
@@ -28,6 +28,7 @@ function App() {
   const [activeView, setActiveView] = useState<ViewType>('wiki');
 
   const [ingestProgress, setIngestProgress] = useState<{message: string, progress: number, status: string} | null>(null);
+  const [ingestionStartTime, setIngestionStartTime] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
 
   // Model state
@@ -64,6 +65,34 @@ function App() {
     localStorage.setItem('llm-wiki-model', modelId);
   };
 
+  useEffect(() => {
+    // Persistent Progress Listener
+    const eventSource = new EventSource(`${API_BASE}/progress`);
+    
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        setIngestProgress(data);
+        
+        if (data.status === 'processing') {
+          setIsIngesting(true);
+        } else if (data.status === 'success') {
+          // Success! Keep progress visible for 3s then hide
+          setTimeout(() => {
+            setIngestProgress(null);
+            setIsIngesting(false);
+          }, 3000);
+        } else {
+          setIsIngesting(false);
+        }
+      } catch (err) {
+        console.error("Failed to parse progress data:", err);
+      }
+    };
+
+    return () => eventSource.close();
+  }, []);
+
   const fetchWikiPages = async () => {
     try {
       const response = await axios.get(`${API_BASE}/wiki`);
@@ -88,20 +117,8 @@ function App() {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    setIsIngesting(true);
     const formData = new FormData();
     formData.append('file', file);
-
-    // Start SSE listener
-    const eventSource = new EventSource(`${API_BASE}/progress`);
-    eventSource.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      setIngestProgress(data);
-      if (data.status === 'success') {
-        eventSource.close();
-        setTimeout(() => setIngestProgress(null), 2000);
-      }
-    };
 
     try {
       await axios.post(`${API_BASE}/ingest?model=${selectedModel}`, formData);
@@ -109,10 +126,47 @@ function App() {
     } catch (error) {
       console.error("Error uploading file:", error);
       alert("Ingestion failed.");
-      eventSource.close();
-      setIngestProgress(null);
-    } finally {
-      setIsIngesting(false);
+    }
+  };
+
+  // Poll for new pages during ingestion so the sidebar stays current
+  useEffect(() => {
+    let interval: any;
+    if (isIngesting) {
+      interval = setInterval(() => {
+        fetchWikiPages();
+      }, 5000);
+    }
+    return () => clearInterval(interval);
+  }, [isIngesting]);
+
+  const calculateETE = () => {
+    if (!ingestionStartTime || !ingestProgress || ingestProgress.progress === 0) return null;
+    const elapsed = (Date.now() - ingestionStartTime) / 1000;
+    const rate = ingestProgress.progress / elapsed;
+    const remaining = (100 - ingestProgress.progress) / rate;
+    
+    if (remaining < 1) return "Few seconds...";
+    if (remaining > 3600) return "Over an hour...";
+    
+    const mins = Math.floor(remaining / 60);
+    const secs = Math.floor(remaining % 60);
+    return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+  };
+
+  const handleDeletePage = async (filename: string) => {
+    if (!window.confirm(`Are you sure you want to delete "${filename}"? This action cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      await axios.delete(`${API_BASE}/wiki/${filename}`);
+      await fetchWikiPages();
+      setSelectedPage(null);
+      setPageContent("");
+    } catch (error) {
+      console.error("Error deleting page:", error);
+      alert("Failed to delete page.");
     }
   };
 
@@ -148,67 +202,75 @@ function App() {
       <aside className="w-72 bg-[#0a0c12]/80 backdrop-blur-xl border-r border-white/5 flex flex-col p-6 space-y-6 z-20 shadow-2xl">
         <div className="flex items-center space-x-3 px-2">
           <div className="w-10 h-10 bg-gradient-to-br from-primary to-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-primary/20">
-            <Book className="w-6 h-6 text-white" />
+            <Brain className="w-6 h-6 text-white" />
           </div>
-          <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-white to-white/60 bg-clip-text text-transparent">LLM Wiki</h1>
+          <div className="flex flex-col">
+            <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-white to-white/60 bg-clip-text text-transparent">Wiki Agent</h1>
+            <span className="text-[8px] font-black uppercase tracking-[0.3em] text-primary/60">Karpathy Edition</span>
+          </div>
         </div>
         
         <div className="flex-1 space-y-8 overflow-y-auto custom-scrollbar pr-2">
           <div className="space-y-2">
-            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/30 px-3">Knowledge base</p>
+            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/30 px-3">Primary Focus</p>
             <nav className="space-y-1">
-              {filteredPages.map((page) => (
-                <button
-                  key={page}
-                  onClick={() => fetchPageContent(page)}
-                  className={`w-full text-left px-3 py-2.5 rounded-xl transition-all duration-300 flex items-center space-x-3 group ${
-                    selectedPage === page && activeView === 'wiki'
-                    ? "bg-primary/10 text-primary border border-primary/20 shadow-[0_0_20px_rgba(var(--primary),0.1)]" 
-                    : "hover:bg-white/5 text-white/60 hover:text-white"
-                  }`}
-                >
-                  <FileText className={`w-4 h-4 transition-transform duration-300 ${selectedPage === page ? "scale-110" : "group-hover:scale-110"}`} />
-                  <span className="truncate text-sm font-medium">{page.replace('.md', '')}</span>
-                </button>
-              ))}
+              <button 
+                onClick={() => setActiveView('chat')}
+                className={`w-full flex items-center space-x-3 px-3 py-3 rounded-xl transition-all duration-300 ${activeView === 'chat' ? "bg-primary text-black font-bold shadow-[0_0_20px_rgba(var(--primary),0.3)]" : "hover:bg-white/5 text-white/60"}`}
+              >
+                <MessageSquare className="w-4 h-4" />
+                <span className="text-sm">Knowledge Chat</span>
+              </button>
+              <button 
+                onClick={() => setActiveView('maintenance')}
+                className={`w-full flex items-center space-x-3 px-3 py-3 rounded-xl transition-all duration-300 ${activeView === 'maintenance' ? "bg-primary text-black font-bold shadow-[0_0_20px_rgba(var(--primary),0.3)]" : "hover:bg-white/5 text-white/60"}`}
+              >
+                <Brain className="w-4 h-4" />
+                <span className="text-sm">Maintenance</span>
+              </button>
+              <button 
+                onClick={() => setActiveView('graph')}
+                className={`w-full flex items-center space-x-3 px-3 py-3 rounded-xl transition-all duration-300 ${activeView === 'graph' ? "bg-primary text-black font-bold shadow-[0_0_20px_rgba(var(--primary),0.3)]" : "hover:bg-white/5 text-white/60"}`}
+              >
+                <LayoutGrid className="w-4 h-4" />
+                <span className="text-sm">Graph View</span>
+              </button>
             </nav>
           </div>
 
           <div className="space-y-2 pt-4 border-t border-white/5">
-            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/30 px-3">Exploration</p>
-            <div className="space-y-1">
-              <button 
-                onClick={() => setActiveView('graph')}
-                className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl transition-all ${activeView === 'graph' ? "bg-primary/10 text-primary border border-primary/20" : "hover:bg-white/5 text-white/60"}`}
-              >
-                <LayoutGrid className="w-4 h-4" />
-                <span className="text-sm font-medium">Graph View</span>
-              </button>
-              <button 
-                onClick={() => setActiveView('meditation')}
-                className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl transition-all ${activeView === 'meditation' ? "bg-primary/10 text-primary border border-primary/20" : "hover:bg-white/5 text-white/60"}`}
-              >
-                <Activity className="w-4 h-4" />
-                <span className="text-sm font-medium">Librarian</span>
-              </button>
-            </div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/30 px-3 flex justify-between items-center">
+              <span>Knowledge Base</span>
+              <span className="bg-white/5 px-1.5 py-0.5 rounded text-[8px]">{wikiPages.length}</span>
+            </p>
+            <nav className="space-y-1 max-h-[300px] overflow-y-auto custom-scrollbar">
+              {filteredPages.map((page) => (
+                <button
+                  key={page}
+                  onClick={() => fetchPageContent(page)}
+                  className={`w-full text-left px-3 py-2 rounded-lg transition-all duration-300 flex items-center space-x-3 group ${
+                    selectedPage === page && activeView === 'wiki'
+                    ? "bg-white/10 text-white" 
+                    : "hover:bg-white/5 text-white/40 hover:text-white"
+                  }`}
+                >
+                  <FileText className={`w-3.5 h-3.5 opacity-40`} />
+                  <span className="truncate text-xs font-medium">{page.replace('.md', '')}</span>
+                </button>
+              ))}
+            </nav>
           </div>
         </div>
 
         <div className="pt-6 border-t border-white/5 space-y-3">
-          {/* Active Model Badge */}
-          {currentModel && (
-            <div className="flex items-center space-x-2 px-3 py-2 rounded-xl bg-white/[0.03] border border-white/5">
-              <div className={`p-1 rounded-md ${currentModel.provider === 'ollama' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-violet-500/10 text-violet-400'}`}>
-                {currentModel.provider === 'ollama' ? <Cpu className="w-3 h-3" /> : <Cloud className="w-3 h-3" />}
-              </div>
-              <div className="flex flex-col">
-                <span className="text-[10px] font-bold uppercase tracking-widest text-white/30">Active Model</span>
-                <span className="text-xs font-semibold text-white/70">{currentModel.display_name}</span>
-              </div>
-            </div>
-          )}
-
+          <button 
+            onClick={() => setActiveView('settings')}
+            className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl transition-all ${activeView === 'settings' ? "bg-white/10 text-white border border-white/10" : "hover:bg-white/5 text-white/60"}`}
+          >
+            <Settings className="w-4 h-4" />
+            <span className="text-sm font-medium">Settings</span>
+          </button>
+          
           <label className="flex items-center space-x-3 px-3 py-3 rounded-xl bg-white/5 hover:bg-white/10 cursor-pointer transition-all border border-white/5 group">
             <div className={`p-1.5 rounded-lg bg-primary/10 text-primary group-hover:scale-110 transition-transform ${isIngesting ? "animate-pulse" : ""}`}>
               <Upload className="w-4 h-4" />
@@ -240,23 +302,68 @@ function App() {
                onModelChange={handleModelChange}
                groqConfigured={groqConfigured}
              />
-             <button 
-               onClick={() => setActiveView('chat')}
-               className={`p-3 rounded-xl transition-all ${activeView === 'chat' ? "bg-primary text-white shadow-lg shadow-primary/20" : "bg-white/5 hover:bg-white/10 text-white/60"}`}
-             >
-               <MessageSquare className="w-5 h-5" />
-             </button>
-             <button 
-               onClick={() => setActiveView('settings')}
-               className={`p-3 rounded-xl transition-all ${activeView === 'settings' ? "bg-primary text-white shadow-lg shadow-primary/20" : "bg-white/5 hover:bg-white/10 text-white/60"}`}
-             >
-               <Settings className="w-5 h-5" />
-             </button>
              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-purple-600 to-blue-600 flex items-center justify-center text-white text-xs font-black shadow-xl border border-white/10 ml-2 cursor-pointer hover:scale-105 transition-transform">
                ST
              </div>
           </div>
         </header>
+
+        {/* Ingestion Bar (Non-blocking) */}
+        {ingestProgress && (
+          <div className="w-full bg-[#0a0c12]/80 backdrop-blur-md border-b border-white/5 overflow-hidden animate-in slide-in-from-top duration-500">
+            <div className="max-w-6xl mx-auto px-10 py-3 flex items-center justify-between">
+              <div className="flex items-center space-x-4 flex-1">
+                <div className="relative">
+                  <div className="absolute inset-0 bg-primary/20 rounded-full blur-md animate-pulse"></div>
+                  <div className={`p-2 rounded-lg bg-primary/10 text-primary ${ingestProgress.status === 'processing' ? 'animate-spin' : ''}`}>
+                    <Activity className="w-4 h-4" />
+                  </div>
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white/30">Compiling Knowledge</span>
+                  <span className="text-sm font-medium text-white/80 truncate max-w-[400px]">{ingestProgress.message}</span>
+                </div>
+              </div>
+
+              <div className="flex items-center space-x-8">
+                {/* Stats */}
+                <div className="hidden md:flex items-center space-x-6">
+                  {currentModel && (
+                    <div className="flex flex-col items-end">
+                      <span className="text-[9px] font-bold uppercase tracking-widest text-white/20">Engine</span>
+                      <div className="flex items-center space-x-1.5">
+                        <div className={`w-1.5 h-1.5 rounded-full ${currentModel.provider === 'ollama' ? 'bg-emerald-500' : 'bg-violet-500'}`}></div>
+                        <span className="text-xs font-semibold text-white/60">{currentModel.display_name}</span>
+                      </div>
+                    </div>
+                  )}
+                  <div className="flex flex-col items-end">
+                    <span className="text-[9px] font-bold uppercase tracking-widest text-white/20">Time Remaining</span>
+                    <div className="flex items-center space-x-1.5 text-primary/80">
+                      <Clock className="w-3 h-3" />
+                      <span className="text-xs font-mono font-bold">{calculateETE() || '--:--'}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Progress Circle/Percent */}
+                <div className="flex items-center space-x-4 bg-white/5 pl-4 pr-1 py-1 rounded-full border border-white/5">
+                  <span className="text-sm font-mono font-black text-primary">{ingestProgress.progress}%</span>
+                  <div className="w-32 h-2 bg-white/5 rounded-full overflow-hidden p-0.5 border border-white/5">
+                    <div 
+                      className="h-full bg-gradient-to-r from-primary to-blue-400 rounded-full transition-all duration-1000 ease-out shadow-[0_0_10px_rgba(var(--primary),0.5)]"
+                      style={{ width: `${ingestProgress.progress}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+            {/* Infinite loading line animation */}
+            <div className="h-[1px] w-full bg-white/5 relative">
+              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-primary/50 to-transparent w-1/2 animate-[loading-shimmer_2s_infinite]"></div>
+            </div>
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto p-10 relative custom-scrollbar">
           {activeView === 'graph' ? (
@@ -273,7 +380,7 @@ function App() {
               groqConfigured={groqConfigured}
               wikiPages={wikiPages}
             />
-          ) : activeView === 'meditation' ? (
+          ) : activeView === 'maintenance' ? (
             <MeditationView pages={wikiPages} selectedModel={selectedModel} />
           ) : selectedPage ? (
             <div className="max-w-4xl mx-auto animate-in fade-in duration-700">
@@ -294,6 +401,15 @@ function App() {
                     </span>
                   </div>
                 </div>
+                {selectedPage && !['index.md', 'log.md', 'SCHEMA.md'].includes(selectedPage) && (
+                  <button
+                    onClick={() => handleDeletePage(selectedPage)}
+                    className="p-3 bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20 rounded-xl transition-all group"
+                    title="Delete Page"
+                  >
+                    <Trash className="w-5 h-5 group-hover:scale-110 transition-transform" />
+                  </button>
+                )}
               </div>
               
               <div className="prose prose-invert max-w-none 
@@ -330,45 +446,6 @@ function App() {
         </div>
       </main>
 
-      {/* Progress Modal */}
-      {ingestProgress && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#05070a]/80 backdrop-blur-xl">
-          <div className="bg-[#0a0c12] p-10 rounded-[2.5rem] w-[450px] shadow-[0_0_100px_rgba(0,0,0,0.5)] border border-white/10 animate-in fade-in zoom-in duration-500">
-            <div className="flex flex-col items-center space-y-8">
-              <div className="relative">
-                <div className="absolute inset-0 bg-primary/20 rounded-full blur-2xl animate-pulse"></div>
-                <div className="w-20 h-20 rounded-[2rem] bg-gradient-to-br from-primary to-blue-600 flex items-center justify-center shadow-2xl relative">
-                  <Activity className={`w-10 h-10 text-white ${ingestProgress.status === 'processing' ? 'animate-spin' : ''}`} />
-                </div>
-              </div>
-              <div className="text-center space-y-3">
-                <h3 className="text-2xl font-black tracking-tight text-white">Compiling Knowledge</h3>
-                <p className="text-sm text-white/40 leading-relaxed font-medium">{ingestProgress.message}</p>
-                {currentModel && (
-                  <div className="flex items-center justify-center space-x-2 pt-1">
-                    <div className={`p-1 rounded-md ${currentModel.provider === 'ollama' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-violet-500/10 text-violet-400'}`}>
-                      {currentModel.provider === 'ollama' ? <Cpu className="w-3 h-3" /> : <Cloud className="w-3 h-3" />}
-                    </div>
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-white/30">{currentModel.display_name}</span>
-                  </div>
-                )}
-              </div>
-              <div className="w-full space-y-4">
-                <div className="w-full bg-white/5 rounded-full h-3 overflow-hidden border border-white/5 p-0.5">
-                  <div 
-                    className="bg-gradient-to-r from-primary to-blue-400 h-full rounded-full transition-all duration-700 ease-out shadow-[0_0_15px_rgba(var(--primary),0.5)]" 
-                    style={{ width: `${ingestProgress.progress}%` }}
-                  />
-                </div>
-                <div className="flex justify-between items-center px-1">
-                  <span className="text-[10px] font-black uppercase tracking-widest text-white/20">Progress</span>
-                  <span className="text-xs font-mono font-bold text-primary">{ingestProgress.progress}%</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

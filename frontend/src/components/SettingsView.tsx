@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, Cpu, Cloud, Check, Database, Shield, BookOpen } from 'lucide-react';
+import { Settings, Cpu, Cloud, Check, Database, Shield, BookOpen, Trash, FileText, RefreshCw } from 'lucide-react';
 import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -24,10 +24,38 @@ interface SettingsViewProps {
 const SettingsView: React.FC<SettingsViewProps> = ({ models, selectedModel, onModelChange, groqConfigured, wikiPages }) => {
   const [schemaContent, setSchemaContent] = useState('');
   const [showSchema, setShowSchema] = useState(false);
+  const [rawSources, setRawSources] = useState<string[]>([]);
+  const [loadingSources, setLoadingSources] = useState(false);
 
   useEffect(() => {
     axios.get(`${API_BASE}/schema`).then(r => setSchemaContent(r.data.content)).catch(() => {});
+    fetchRawSources();
   }, []);
+
+  const fetchRawSources = async () => {
+    setLoadingSources(true);
+    try {
+      const response = await axios.get(`${API_BASE}/raw`);
+      setRawSources(response.data);
+    } catch (error) {
+      console.error("Error fetching raw sources:", error);
+    } finally {
+      setLoadingSources(false);
+    }
+  };
+
+  const handleDeleteRawSource = async (filename: string) => {
+    if (!window.confirm(`Delete raw source "${filename}"? Wiki pages already compiled from this source will remain.`)) {
+      return;
+    }
+    try {
+      await axios.delete(`${API_BASE}/raw/${filename}`);
+      fetchRawSources();
+    } catch (error) {
+      console.error("Error deleting raw source:", error);
+      alert("Failed to delete raw source.");
+    }
+  };
 
   const ollamaModels = models.filter(m => m.provider === 'ollama');
   const groqModels = models.filter(m => m.provider === 'groq');
@@ -110,13 +138,49 @@ const SettingsView: React.FC<SettingsViewProps> = ({ models, selectedModel, onMo
               <p className="text-[10px] uppercase tracking-widest text-white/30 font-bold mt-1">Pages</p>
             </div>
             <div className="bg-white/[0.03] p-4 rounded-xl border border-white/5 text-center">
-              <p className="text-2xl font-black text-white">{wikiPages.includes('log.md') ? '✓' : '—'}</p>
-              <p className="text-[10px] uppercase tracking-widest text-white/30 font-bold mt-1">Log</p>
+              <p className="text-2xl font-black text-white">{wikiPages.length.toString() === '0' ? '0' : rawSources.length}</p>
+              <p className="text-[10px] uppercase tracking-widest text-white/30 font-bold mt-1">Sources</p>
             </div>
             <div className="bg-white/[0.03] p-4 rounded-xl border border-white/5 text-center">
               <p className="text-2xl font-black text-white">{wikiPages.includes('SCHEMA.md') ? '✓' : '—'}</p>
               <p className="text-[10px] uppercase tracking-widest text-white/30 font-bold mt-1">Schema</p>
             </div>
+          </div>
+        </section>
+
+        {/* Managed Sources */}
+        <section className="glass p-6 rounded-2xl space-y-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3 text-primary">
+              <FileText className="w-5 h-5" />
+              <h3 className="font-semibold">Raw Sources</h3>
+            </div>
+            <button onClick={fetchRawSources} className={`p-1.5 hover:bg-white/5 rounded-lg transition-colors ${loadingSources ? 'animate-spin' : ''}`}>
+              <RefreshCw className="w-4 h-4 text-white/30" />
+            </button>
+          </div>
+          <div className="space-y-2 max-h-60 overflow-y-auto custom-scrollbar pr-1">
+            {rawSources.length === 0 ? (
+              <p className="text-center py-4 text-xs text-white/20 italic">No raw sources uploaded yet.</p>
+            ) : (
+              rawSources.map((source) => (
+                <div key={source} className="flex items-center justify-between p-3 bg-white/[0.02] border border-white/5 rounded-xl group hover:border-white/10 transition-all">
+                  <div className="flex items-center space-x-3 overflow-hidden">
+                    <div className="p-2 bg-primary/5 text-primary/60 rounded-lg">
+                      <FileText className="w-4 h-4" />
+                    </div>
+                    <span className="text-sm text-white/70 truncate">{source}</span>
+                  </div>
+                  <button
+                    onClick={() => handleDeleteRawSource(source)}
+                    className="p-2 text-white/20 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all opacity-0 group-hover:opacity-100"
+                    title="Delete Source"
+                  >
+                    <Trash className="w-4 h-4" />
+                  </button>
+                </div>
+              ))
+            )}
           </div>
         </section>
 

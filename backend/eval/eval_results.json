@@ -1,0 +1,410 @@
+{
+  "qwen3.5:9b": [
+    {
+      "query_id": "factual",
+      "query": "What year was Artificial intelligence founded as an academic discipline?",
+      "ground_truth": "Artificial intelligence was founded as an academic discipline in 1956.",
+      "iterations": [
+        {
+          "iteration": 1,
+          "latency": 19.199424624999665,
+          "answer": "Artificial intelligence was founded as an academic discipline in 1956."
+        },
+        {
+          "iteration": 2,
+          "latency": 13.377812000000631,
+          "answer": "Artificial intelligence was founded as an academic discipline in 1956."
+        },
+        {
+          "iteration": 3,
+          "latency": 13.348586457999772,
+          "answer": "Artificial intelligence was founded as an academic discipline in 1956."
+        }
+      ]
+    },
+    {
+      "query_id": "multi_hop",
+      "query": "What architectural development further accelerated the growth of AI that had initially increased due to the use of graphics processing units?",
+      "ground_truth": "The transformer architecture in 2017 further accelerated the growth.",
+      "iterations": [
+        {
+          "iteration": 1,
+          "latency": 29.710734415999468,
+          "answer": "The transformer architecture."
+        },
+        {
+          "iteration": 2,
+          "latency": 29.649277374999656,
+          "answer": "The transformer architecture."
+        },
+        {
+          "iteration": 3,
+          "latency": 29.69809345900103,
+          "answer": "The transformer architecture."
+        }
+      ]
+    },
+    {
+      "query_id": "retrieval",
+      "query": "According to the rules provided in the text, what should you do if updating an existing page?",
+      "ground_truth": "If updating an existing page, INTEGRATE the new information into the existing structure.",
+      "iterations": [
+        {
+          "iteration": 1,
+          "latency": 13.792824666999877,
+          "answer": "If updating an existing page, you should integrate the new information into the existing structure."
+        },
+        {
+          "iteration": 2,
+          "latency": 13.788868374998856,
+          "answer": "If updating an existing page, you should integrate the new information into the existing structure."
+        },
+        {
+          "iteration": 3,
+          "latency": 13.852711125000496,
+          "answer": "If updating an existing page, you should integrate the new information into the existing structure."
+        }
+      ]
+    }
+  ],
+  "ministral-3:8b": [
+    {
+      "query_id": "factual",
+      "query": "What year was Artificial intelligence founded as an academic discipline?",
+      "ground_truth": "Artificial intelligence was founded as an academic discipline in 1956.",
+      "iterations": [
+        {
+          "iteration": 1,
+          "latency": 6.5595022500001505,
+          "answer": "Artificial intelligence was founded as an academic discipline in **1956**."
+        },
+        {
+          "iteration": 2,
+          "latency": 0.48933545900035824,
+          "answer": "Artificial intelligence was founded as an academic discipline in **1956**."
+        },
+        {
+          "iteration": 3,
+          "latency": 0.49673220799923,
+          "answer": "Artificial intelligence was founded as an academic discipline in **1956**."
+        }
+      ]
+    },
+    {
+      "query_id": "multi_hop",
+      "query": "What architectural development further accelerated the growth of AI that had initially increased due to the use of graphics processing units?",
+      "ground_truth": "The transformer architecture in 2017 further accelerated the growth.",
+      "iterations": [
+        {
+          "iteration": 1,
+          "latency": 1.8101421669998672,
+          "answer": "The **transformer architecture** (introduced after 2017) further accelerated AI growth, following the initial boost from **graphics processing units (GPUs)** accelerating neural networks post-2012."
+        },
+        {
+          "iteration": 2,
+          "latency": 1.1593422919995646,
+          "answer": "The **transformer architecture** (introduced after 2017) further accelerated AI growth, following the initial boost from **graphics processing units (GPUs)** accelerating neural networks post-2012."
+        },
+        {
+          "iteration": 3,
+          "latency": 1.1574830410008872,
+          "answer": "The **transformer architecture** (introduced after 2017) further accelerated AI growth, following the initial boost from **graphics processing units (GPUs)** accelerating neural networks post-2012."
+        }
+      ]
+    },
+    {
+      "query_id": "retrieval",
+      "query": "According to the rules provided in the text, what should you do if updating an existing page?",
+      "ground_truth": "If updating an existing page, INTEGRATE the new information into the existing structure.",
+      "iterations": [
+        {
+          "iteration": 1,
+          "latency": 1.7546965420006018,
+          "answer": "**Rule for updating an existing page:**\n**INTEGRATE** the new information into the **existing structure** of the page. Do not duplicate or add disjointed content."
+        },
+        {
+          "iteration": 2,
+          "latency": 0.9423187080010393,
+          "answer": "**Rule for updating an existing page:**\n**INTEGRATE** the new information into the **existing structure** of the page. Do not duplicate or add disjointed content."
+        },
+        {
+          "iteration": 3,
+          "latency": 0.9383342499986611,
+          "answer": "**Rule for updating an existing page:**\n**INTEGRATE** the new information into the **existing structure** of the page. Do not duplicate or add disjointed content."
+        }
+      ]
+    }
+  ],
+  "ibm/granite4.1:8b": [
+    {
+      "query_id": "factual",
+      "query": "What year was Artificial intelligence founded as an academic discipline?",
+      "ground_truth": "Artificial intelligence was founded as an academic discipline in 1956.",
+      "iterations": [
+        {
+          "iteration": 1,
+          "latency": 12.78334412500044,
+          "answer": "Artificial intelligence was founded as an academic discipline in 1956."
+        },
+        {
+          "iteration": 2,
+          "latency": 0.41207054200094717,
+          "answer": "Artificial intelligence was founded as an academic discipline in 1956."
+        },
+        {
+          "iteration": 3,
+          "latency": 0.4051431669995509,
+          "answer": "Artificial intelligence was founded as an academic discipline in 1956."
+        }
+      ]
+    },
+    {
+      "query_id": "multi_hop",
+      "query": "What architectural development further accelerated the growth of AI that had initially increased due to the use of graphics processing units?",
+      "ground_truth": "The transformer architecture in 2017 further accelerated the growth.",
+      "iterations": [
+        {
+          "iteration": 1,
+          "latency": 2.0713810409997677,
+          "answer": "The transformer architecture further accelerated the growth of AI after 2017, following the initial increase in interest and funding driven by the use of graphics processing units (GPUs) to accelerate neural networks and the success of deep learning techniques around 2012."
+        },
+        {
+          "iteration": 2,
+          "latency": 1.30557220800074,
+          "answer": "The transformer architecture further accelerated the growth of AI after 2017, following the initial increase in interest and funding driven by the use of graphics processing units (GPUs) to accelerate neural networks and the success of deep learning techniques around 2012."
+        },
+        {
+          "iteration": 3,
+          "latency": 1.3122678750005434,
+          "answer": "The transformer architecture further accelerated the growth of AI after 2017, following the initial increase in interest and funding driven by the use of graphics processing units (GPUs) to accelerate neural networks and the success of deep learning techniques around 2012."
+        }
+      ]
+    },
+    {
+      "query_id": "retrieval",
+      "query": "According to the rules provided in the text, what should you do if updating an existing page?",
+      "ground_truth": "If updating an existing page, INTEGRATE the new information into the existing structure.",
+      "iterations": [
+        {
+          "iteration": 1,
+          "latency": 2.8482811659996514,
+          "answer": "If updating an existing page, you should integrate the new information into the existing structure while adhering to the YAML frontmatter guidelines for a new page. However, since it's an update, you would modify the relevant sections of the already structured content rather than starting anew with YAML frontmatter. The key action is to **integrate** the updates smoothly within the current layout and formatting."
+        },
+        {
+          "iteration": 2,
+          "latency": 1.9754646660003345,
+          "answer": "If updating an existing page, you should integrate the new information into the existing structure while adhering to the YAML frontmatter guidelines for a new page. However, since it's an update, you would modify the relevant sections of the already structured content rather than starting anew with YAML frontmatter. The key action is to **integrate** the updates smoothly within the current layout and formatting."
+        },
+        {
+          "iteration": 3,
+          "latency": 1.9820757500001491,
+          "answer": "If updating an existing page, you should integrate the new information into the existing structure while adhering to the YAML frontmatter guidelines for a new page. However, since it's an update, you would modify the relevant sections of the already structured content rather than starting anew with YAML frontmatter. The key action is to **integrate** the updates smoothly within the current layout and formatting."
+        }
+      ]
+    }
+  ],
+  "llama3.2:1b": [
+    {
+      "query_id": "factual",
+      "query": "What year was Artificial intelligence founded as an academic discipline?",
+      "ground_truth": "Artificial intelligence was founded as an academic discipline in 1956.",
+      "iterations": [
+        {
+          "iteration": 1,
+          "latency": 1.638541999998779,
+          "answer": "Artificial intelligence (AI) was founded as an academic discipline in 1956."
+        },
+        {
+          "iteration": 2,
+          "latency": 0.18691129200124124,
+          "answer": "Artificial intelligence (AI) was founded as an academic discipline in 1956."
+        },
+        {
+          "iteration": 3,
+          "latency": 0.1759373749991937,
+          "answer": "Artificial intelligence (AI) was founded as an academic discipline in 1956."
+        }
+      ]
+    },
+    {
+      "query_id": "multi_hop",
+      "query": "What architectural development further accelerated the growth of AI that had initially increased due to the use of graphics processing units?",
+      "ground_truth": "The transformer architecture in 2017 further accelerated the growth.",
+      "iterations": [
+        {
+          "iteration": 1,
+          "latency": 0.8322852499986766,
+          "answer": "The transformer architecture further accelerated the growth of AI in 2017."
+        },
+        {
+          "iteration": 2,
+          "latency": 0.1734257919997617,
+          "answer": "The transformer architecture further accelerated the growth of AI in 2017."
+        },
+        {
+          "iteration": 3,
+          "latency": 0.16418574999988778,
+          "answer": "The transformer architecture further accelerated the growth of AI in 2017."
+        }
+      ]
+    },
+    {
+      "query_id": "retrieval",
+      "query": "According to the rules provided in the text, what should you do if updating an existing page?",
+      "ground_truth": "If updating an existing page, INTEGRATE the new information into the existing structure.",
+      "iterations": [
+        {
+          "iteration": 1,
+          "latency": 0.7984884580000653,
+          "answer": "You should INTEGRATE the new information into the existing structure of the existing page."
+        },
+        {
+          "iteration": 2,
+          "latency": 0.17531270899962692,
+          "answer": "You should INTEGRATE the new information into the existing structure of the existing page."
+        },
+        {
+          "iteration": 3,
+          "latency": 0.17428504100098507,
+          "answer": "You should INTEGRATE the new information into the existing structure of the existing page."
+        }
+      ]
+    }
+  ],
+  "gemma4:e2b": [
+    {
+      "query_id": "factual",
+      "query": "What year was Artificial intelligence founded as an academic discipline?",
+      "ground_truth": "Artificial intelligence was founded as an academic discipline in 1956.",
+      "iterations": [
+        {
+          "iteration": 1,
+          "latency": 5.646820915999342,
+          "answer": "Artificial intelligence was founded as an academic discipline in 1956."
+        },
+        {
+          "iteration": 2,
+          "latency": 1.7734998340001766,
+          "answer": "Artificial intelligence was founded as an academic discipline in 1956."
+        },
+        {
+          "iteration": 3,
+          "latency": 1.811984375000975,
+          "answer": "Artificial intelligence was founded as an academic discipline in 1956."
+        }
+      ]
+    },
+    {
+      "query_id": "multi_hop",
+      "query": "What architectural development further accelerated the growth of AI that had initially increased due to the use of graphics processing units?",
+      "ground_truth": "The transformer architecture in 2017 further accelerated the growth.",
+      "iterations": [
+        {
+          "iteration": 1,
+          "latency": 2.5002957500000775,
+          "answer": "The transformer architecture accelerated the growth of AI further after 2017."
+        },
+        {
+          "iteration": 2,
+          "latency": 2.3029222910008684,
+          "answer": "The transformer architecture accelerated the growth of AI further after 2017."
+        },
+        {
+          "iteration": 3,
+          "latency": 2.3569210420009767,
+          "answer": "The transformer architecture accelerated the growth of AI further after 2017."
+        }
+      ]
+    },
+    {
+      "query_id": "retrieval",
+      "query": "According to the rules provided in the text, what should you do if updating an existing page?",
+      "ground_truth": "If updating an existing page, INTEGRATE the new information into the existing structure.",
+      "iterations": [
+        {
+          "iteration": 1,
+          "latency": 3.208419958000377,
+          "answer": "If updating an existing page, you should INTEGRATE the new information into the existing structure."
+        },
+        {
+          "iteration": 2,
+          "latency": 2.9506380419989,
+          "answer": "If updating an existing page, you should INTEGRATE the new information into the existing structure."
+        },
+        {
+          "iteration": 3,
+          "latency": 2.947204915999464,
+          "answer": "If updating an existing page, you should INTEGRATE the new information into the existing structure."
+        }
+      ]
+    }
+  ],
+  "gemma4:e4b": [
+    {
+      "query_id": "factual",
+      "query": "What year was Artificial intelligence founded as an academic discipline?",
+      "ground_truth": "Artificial intelligence was founded as an academic discipline in 1956.",
+      "iterations": [
+        {
+          "iteration": 1,
+          "latency": 8.262057291998644,
+          "answer": "Artificial intelligence was founded as an academic discipline in 1956."
+        },
+        {
+          "iteration": 2,
+          "latency": 3.131311791999906,
+          "answer": "Artificial intelligence was founded as an academic discipline in 1956."
+        },
+        {
+          "iteration": 3,
+          "latency": 3.05984216700017,
+          "answer": "Artificial intelligence was founded as an academic discipline in 1956."
+        }
+      ]
+    },
+    {
+      "query_id": "multi_hop",
+      "query": "What architectural development further accelerated the growth of AI that had initially increased due to the use of graphics processing units?",
+      "ground_truth": "The transformer architecture in 2017 further accelerated the growth.",
+      "iterations": [
+        {
+          "iteration": 1,
+          "latency": 4.5944644160008465,
+          "answer": "The growth accelerated further after 2017 with the transformer architecture."
+        },
+        {
+          "iteration": 2,
+          "latency": 4.24901037500058,
+          "answer": "The growth accelerated further after 2017 with the transformer architecture."
+        },
+        {
+          "iteration": 3,
+          "latency": 4.295020834000752,
+          "answer": "The growth accelerated further after 2017 with the transformer architecture."
+        }
+      ]
+    },
+    {
+      "query_id": "retrieval",
+      "query": "According to the rules provided in the text, what should you do if updating an existing page?",
+      "ground_truth": "If updating an existing page, INTEGRATE the new information into the existing structure.",
+      "iterations": [
+        {
+          "iteration": 1,
+          "latency": 4.312387041998591,
+          "answer": "If updating an existing page, you must INTEGRATE the new information into the existing structure."
+        },
+        {
+          "iteration": 2,
+          "latency": 3.769772292000198,
+          "answer": "If updating an existing page, you must INTEGRATE the new information into the existing structure."
+        },
+        {
+          "iteration": 3,
+          "latency": 3.783093041000029,
+          "answer": "If updating an existing page, you must INTEGRATE the new information into the existing structure."
+        }
+      ]
+    }
+  ]
+}
