@@ -2,27 +2,24 @@ import os
 import re
 from typing import List, Dict, Tuple
 import yaml
+import json
 from datetime import datetime
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from core.llm_provider import get_llm, call_with_fallback, TaskComplexity
+from core.llm_provider import call_with_fallback
 from core.schema import (
     COMPILER_SYSTEM_PROMPT,
-    ENTITY_EXTRACTION_PROMPT,
-    SYNTHESIS_PROMPT,
-    FILTERING_PROMPT,
+    CORPUS_SUMMARY_PROMPT,
+    CONCEPT_EXTRACTION_PROMPT,
+    CONCEPT_ARTICLE_PROMPT,
     LOG_ENTRY_FORMAT,
 )
-from config import settings
 from utils.git_manager import GitManager
 from utils.progress import progress_manager
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-import asyncio
 import logging
 from core.query import QueryEngine
 
-# Configure detailed logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -30,42 +27,38 @@ logging.basicConfig(
 )
 logger = logging.getLogger("llm-wiki")
 
-
 class IngestEngine:
     def __init__(self, raw_dir: str, wiki_dir: str, model_id: str = None):
         self.raw_dir = raw_dir
         self.wiki_dir = wiki_dir
-        self.model_id = model_id # If None, we use tiered logic
+        self.model_id = model_id
         os.makedirs(raw_dir, exist_ok=True)
         os.makedirs(wiki_dir, exist_ok=True)
 
         self.git_manager = GitManager(wiki_dir)
-
-        # Chunking strategy for large documents
-        self.splitter = RecursiveCharacterTextSplitter(
-            chunk_size=2000,
-            chunk_overlap=200,
-        )
+        self.splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
         self.query_engine = QueryEngine(wiki_dir)
 
     async def _call_llm(self, messages: list, task_type: str) -> str:
-        """Invoke the LLM with fallback logic."""
-        result = await call_with_fallback(messages, task_type, model_id=self.model_id)
+        logger.info(f"  🤖 Calling LLM for task: {task_type} (model: {self.model_id})")
+        try:
+            result = await call_with_fallback(messages, task_type, model_id=self.model_id)
+        except Exception as e:
+            logger.error(f"  ❌ LLM call FAILED for {task_type}: {e}")
+            return ""
         if not result or not result.strip():
             logger.warning(f"  ⚠️ LLM returned empty result for {task_type}")
             return ""
-        
-        logger.info(f"    ✅ LLM returned {len(result)} chars for {task_type}: {result[:50]}...")
+        logger.info(f"  ✅ LLM returned {len(result)} chars for {task_type}")
+        logger.debug(f"  📄 LLM output preview: {result[:200]}")
         return result
 
     def _get_existing_pages(self) -> List[str]:
-        """List all .md files in the wiki directory."""
         if not os.path.exists(self.wiki_dir):
             return []
         return [f for f in os.listdir(self.wiki_dir) if f.endswith(".md") and f not in ("SCHEMA.md",)]
 
     def _read_wiki_page(self, filename: str) -> str:
-        """Read the content of a wiki page."""
         path = os.path.join(self.wiki_dir, filename)
         if os.path.exists(path):
             with open(path, "r") as f:
@@ -73,183 +66,151 @@ class IngestEngine:
         return ""
 
     def _write_wiki_page(self, filename: str, content: str):
-        """Write content to a wiki page."""
         path = os.path.join(self.wiki_dir, filename)
-        abs_path = os.path.abspath(path)
-        logger.info(f"    💾 Writing to: {abs_path}")
         with open(path, "w") as f:
             f.write(content)
 
-    # ─── Step 0: Filtering ─────────────────────────────────────────────
-    async def _filter_content(self, content: str) -> Tuple[bool, str]:
-        """Check if content contains durable knowledge or ephemeral noise."""
-        # For very short content, just let it through
-        if len(content.strip()) < 50:
-            return False, "Content too short to contain durable knowledge."
-
-        prompt = FILTERING_PROMPT.format(content=content[:3000])
+    async def _generate_summary(self, content: str) -> str:
+        """Generate a short summary of a single document."""
+        content_len = len(content)
+        if content_len < 200:
+            logger.info(f"    📋 Content too short ({content_len} chars), using raw text as summary")
+            return content
+        
+        # Use more content for the summary if available
+        truncated = content[:6000]
+        prompt = CORPUS_SUMMARY_PROMPT.format(content=truncated)
         messages = [HumanMessage(content=prompt)]
-        result = await self._call_llm(messages, "filtering")
+        summary = await self._call_llm(messages, "summarization")
+        if not summary:
+            logger.warning(f"    ⚠️ Summary generation returned empty, using first 1000 chars as fallback")
+            return content[:1000]
+        logger.info(f"    📋 Generated summary: {summary[:100]}...")
+        return summary
 
-        is_durable = result.strip().upper().startswith("DURABLE")
-        return is_durable, result.strip()
+    def _parse_concepts_from_text(self, result: str) -> List[Dict[str, str]]:
+        """Try to parse a JSON concept list from raw LLM output."""
+        if not result or not result.strip():
+            logger.error("  ❌ Cannot parse concepts from empty result")
+            return []
 
-    # ─── Step 1: Entity Extraction ─────────────────────────────────────
-    async def _extract_entities(self, content: str) -> List[Dict[str, str]]:
-        """
-        Extract entities/concepts from the raw document.
-        Returns a list of dicts: {name, description, action}
-        """
-        existing_pages = self._get_existing_pages()
-        existing_list = "\n".join(f"- {p}" for p in existing_pages) if existing_pages else "(no existing pages)"
+        # Strip markdown code fences if present
+        cleaned = result.strip()
+        if cleaned.startswith('```'):
+            # Remove opening fence (```json or ```)
+            first_newline = cleaned.find('\n')
+            if first_newline != -1:
+                cleaned = cleaned[first_newline + 1:]
+            # Remove closing fence
+            if cleaned.rstrip().endswith('```'):
+                cleaned = cleaned.rstrip()[:-3].rstrip()
 
-        # If document is large, chunk it and extract from each chunk
-        chunks = self.splitter.split_text(content)
-        all_entities = []
+        # Find JSON array
+        start = cleaned.find('[')
+        end = cleaned.rfind(']') + 1
+        if start == -1 or end == 0:
+            logger.error(f"  ❌ No JSON array found in LLM output. Full output:\n{result}")
+            return []
 
-        for i, chunk in enumerate(chunks):
-            progress_pct = 10 + int((i / max(len(chunks), 1)) * 30)
-            progress_manager.broadcast(f"Analyzing chunk {i+1}/{len(chunks)} for entities", progress_pct)
-            logger.info(f"  🔍 Extracting entities from chunk {i+1}/{len(chunks)}")
+        json_str = cleaned[start:end]
+        try:
+            concepts = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            logger.error(f"  ❌ JSON parse error: {e}\n  Raw JSON string: {json_str[:500]}")
+            return []
 
-            prompt = ENTITY_EXTRACTION_PROMPT.format(
-                content=chunk,
-                existing_pages=existing_list,
-            )
-            messages = [HumanMessage(content=prompt)]
-            try:
-                result = await self._call_llm(messages, "extraction")
-            except Exception as e:
-                logger.error(f"  ❌ Error extracting entities from chunk {i+1}: {e}")
-                continue
+        # Filter and normalize
+        valid = [c for c in concepts if isinstance(c, dict) and 'name' in c]
+        for c in valid:
+            c['name'] = c['name'].lower().replace(" ", "-")
+            c['name'] = re.sub(r'[^a-z0-9\-]', '', c['name'])
+        
+        logger.info(f"  ✅ Parsed {len(valid)} valid concepts: {[c['name'] for c in valid]}")
+        return valid
 
-            if not result:
-                continue
+    async def _extract_global_concepts(self, topic: str, source_summaries: str) -> List[Dict[str, str]]:
+        """Extract a global list of concepts from the combined document summaries."""
+        logger.info(f"  📊 Summaries length: {len(source_summaries)} chars")
+        logger.info(f"  📊 Summaries preview: {source_summaries[:300]}...")
 
-            # Parse the structured response — handle multiple formats from small models
-            for line in result.strip().split("\n"):
-                line = line.strip()
-                # Remove leading bullets/numbers: "- ", "1. ", "* "
-                cleaned = re.sub(r'^[\-\*\d]+[\.\)\s]*\s*', '', line)
-                # Remove ENTITY: prefix if present
-                if cleaned.upper().startswith("ENTITY:"):
-                    cleaned = cleaned[7:].strip()
-                
-                # Try to parse "name | description | action" format
-                # More robust regex matching
-                # Example: "ENTITY: some-name | some description | NEW" or just "- some-name | desc"
-                match = re.search(r'([a-zA-Z0-9\-]+)\s*\|\s*(.*?)(?:\s*\|\s*(NEW|UPDATE))?$', cleaned, re.IGNORECASE)
-                if match:
-                    name = match.group(1).strip().lower()
-                    description = match.group(2).strip()
-                    action = match.group(3).strip().upper() if match.group(3) else "NEW"
-                else:
-                    parts = cleaned.split("|")
-                    if len(parts) >= 2:
-                        name = parts[0].strip().lower().replace(" ", "-")
-                        name = re.sub(r'[^a-z0-9\-]', '', name)
-                        description = parts[1].strip() if len(parts) > 1 else "" 
-                        action = parts[2].strip().upper() if len(parts) > 2 else "NEW"
-                    else:
-                        continue
+        prompt = CONCEPT_EXTRACTION_PROMPT.format(
+            topic=topic,
+            source_summaries=source_summaries
+        )
+        messages = [HumanMessage(content=prompt)]
+        result = await self._call_llm(messages, "concept-extraction")
+        
+        logger.info(f"  📊 Raw concept extraction output ({len(result)} chars):\n{result}")
 
-                if action not in ("NEW", "UPDATE"):
-                    action = "NEW"
-                    if name and len(name) > 1:
-                        all_entities.append({
-                            "name": name,
-                            "description": description,
-                            "action": action,
-                        })
+        concepts = self._parse_concepts_from_text(result)
 
-        # De-duplicate entities by name
-        seen = set()
-        unique_entities = []
-        for entity in all_entities:
-            if entity["name"] not in seen:
-                seen.add(entity["name"])
-                unique_entities.append(entity)
+        # Retry once if parsing failed
+        if not concepts:
+            logger.warning("  🔄 First attempt failed to extract concepts, retrying...")
+            result = await self._call_llm(messages, "concept-extraction-retry")
+            logger.info(f"  📊 Retry output ({len(result)} chars):\n{result}")
+            concepts = self._parse_concepts_from_text(result)
 
-        logger.info(f"  📋 Extracted {len(unique_entities)} unique entities")
-        return unique_entities
+        return concepts
 
-    # ─── Step 2: Multi-Page Synthesis ──────────────────────────────────
-    async def _synthesize_page(
-        self, entity: Dict[str, str], raw_content: str, source_id: str
-    ) -> str:
-        """Create or update a wiki page for a single entity."""
-        filename = f"{entity['name']}.md"
+    async def _synthesize_concept_article(self, concept: Dict[str, str]) -> str:
+        """Write a standalone article for a specific concept using RAG."""
+        filename = f"{concept['name']}.md"
         existing_content = self._read_wiki_page(filename)
 
         if existing_content:
             existing_content_section = f"EXISTING PAGE CONTENT (preserve and integrate):\n{existing_content}"
+            logger.info(f"    📄 Found existing page for {concept['name']} ({len(existing_content)} chars)")
         else:
-            existing_content_section = "This is a NEW page. Create it with proper YAML frontmatter."
+            existing_content_section = ""
 
-        # Find a relevant chunk of the raw content (search for entity name)
-        entity_terms = entity['name'].replace('-', ' ').split()
-        relevant_chunk = ""
-        paragraphs = raw_content.split('\n\n')
-        for para in paragraphs:
-            para_lower = para.lower()
-            if any(term in para_lower for term in entity_terms):
-                relevant_chunk += para + "\n\n"
-                if len(relevant_chunk) > 3000:
-                    break
-        
-        # Fallback: use the entity description + first 2000 chars
-        if not relevant_chunk.strip():
-            relevant_chunk = f"{entity['description']}\n\n{raw_content[:2000]}"
+        # Retrieve relevant context from ChromaDB
+        query = f"{concept['name'].replace('-', ' ')} {concept.get('description', '')}"
+        logger.info(f"    🔎 RAG query: {query[:100]}")
+        retrieved_context = await self.query_engine.search(query, k=8)
+        if not retrieved_context:
+            logger.warning(f"    ⚠️ No RAG results for concept: {concept['name']}")
+            retrieved_context = "No specific details found in the provided sources."
+        else:
+            logger.info(f"    🔎 RAG returned {len(retrieved_context)} chars of context")
 
-        # Synthesize the page
         messages = [
             SystemMessage(content=COMPILER_SYSTEM_PROMPT),
-            HumanMessage(content=SYNTHESIS_PROMPT.format(
-                entity_name=entity["name"].replace("-", " ").title(),
-                existing_content_section=existing_content_section,
-                source_id=source_id,
-                new_information=relevant_chunk[:3000],
-            )),
+            HumanMessage(content=CONCEPT_ARTICLE_PROMPT.format(
+                concept_name=concept["name"].replace("-", " ").title(),
+                retrieved_context=retrieved_context,
+                existing_content_section=existing_content_section
+            ))
         ]
 
-        page_content = await self._call_llm(messages, "synthesis")
-        return page_content
+        return await self._call_llm(messages, "article-writing")
 
-    # ─── Step 3: Update Index ──────────────────────────────────────────
-    def _update_index(self, pages_touched: Dict[str, str]):
-        """Rebuild the index.md with all wiki pages."""
+    def _update_index(self, touched_pages: List[str] = None):
         index_path = os.path.join(self.wiki_dir, "index.md")
         all_pages = self._get_existing_pages()
-
         lines = ["# Wiki Index\n", "## Map of Content\n"]
+        touched = set(touched_pages or [])
 
         for page in sorted(all_pages):
-            if page in ("index.md", "log.md", "SCHEMA.md"):
-                continue
-            # Try to extract title from frontmatter
+            if page in ("index.md", "log.md", "SCHEMA.md"): continue
             content = self._read_wiki_page(page)
             title = page.replace(".md", "").replace("-", " ").title()
             try:
                 if content.startswith("---"):
                     fm_end = content.index("---", 3)
                     fm = yaml.safe_load(content[3:fm_end])
-                    if fm and isinstance(fm, dict):
-                        title = fm.get("title", title)
-            except (ValueError, yaml.YAMLError):
+                    if fm and isinstance(fm, dict): title = fm.get("title", title)
+            except:
                 pass
 
-            status = "updated" if page in pages_touched else ""
-            marker = " ✨" if status else ""
+            marker = " ✨" if page.replace(".md", "") in touched else ""
             lines.append(f"- [[{page.replace('.md', '')}]] — {title}{marker}\n")
 
         with open(index_path, "w") as f:
             f.writelines(lines)
 
-    # ─── Step 4: Update Log ────────────────────────────────────────────
     def _update_log(self, source_id: str, created: List[str], updated: List[str]):
-        """Append an entry to log.md."""
         log_path = os.path.join(self.wiki_dir, "log.md")
-
         if not os.path.exists(log_path):
             with open(log_path, "w") as f:
                 f.write("# Compilation Log\n\n")
@@ -257,149 +218,111 @@ class IngestEngine:
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         created_str = ", ".join(f"[[{c}]]" for c in created) if created else "none"
         updated_str = ", ".join(f"[[{u}]]" for u in updated) if updated else "none"
-
-        entry = LOG_ENTRY_FORMAT.format(
-            date=now,
-            source=source_id,
-            created=created_str,
-            updated=updated_str,
-        )
-
+        entry = LOG_ENTRY_FORMAT.format(date=now, source=source_id, created=created_str, updated=updated_str)
         with open(log_path, "a") as f:
             f.write(entry)
 
-    # ─── Main Process ──────────────────────────────────────────────────
-    async def process_file(self, filename: str) -> Dict:
+    async def process_corpus(self, topic: str, documents: List[Dict[str, str]]) -> Dict:
         """
-        Full Compile-and-Maintain ingestion pipeline.
-        Returns a summary of what was created/updated.
+        Process a full corpus of documents (from folder, vault, or clippings).
+        documents: List of dicts with 'filename', 'content', 'source_type'
         """
-        logger.info(f"🚀 Starting ingestion for: {filename} (model: {self.model_id})")
-        progress_manager.broadcast(f"Starting ingestion for {filename}", 5)
+        logger.info(f"🚀 Starting corpus ingestion for topic: '{topic}' with {len(documents)} docs.")
+        for i, doc in enumerate(documents):
+            logger.info(f"  📄 Doc {i+1}: {doc['filename']} ({len(doc['content'])} chars, type={doc.get('source_type', '?')})")
+        progress_manager.broadcast("Initializing corpus ingestion", 5)
 
-        raw_path = os.path.join(self.raw_dir, filename)
-        with open(raw_path, "r") as f:
-            content = f.read()
+        # 1. Normalize, Save, and Embed
+        all_summaries = []
+        for i, doc in enumerate(documents):
+            logger.info(f"\n{'='*60}")
+            logger.info(f"📂 Processing document {i+1}/{len(documents)}: {doc['filename']}")
+            logger.info(f"{'='*60}")
+            progress_manager.broadcast(f"Processing source {i+1}/{len(documents)}: {doc['filename']}", 10 + int((i/len(documents))*20))
+            
+            # Save raw
+            raw_path = os.path.join(self.raw_dir, doc['filename'])
+            with open(raw_path, "w") as f:
+                f.write(doc['content'])
+            logger.info(f"  💾 Saved raw file to: {raw_path}")
+            
+            # Embed in Chroma
+            chunks = self.splitter.split_text(doc['content'])
+            logger.info(f"  🧩 Split into {len(chunks)} chunks")
+            metadatas = [{"source": doc['filename'], "type": doc.get('source_type', 'upload')} for _ in chunks]
+            self.query_engine.add_documents(chunks=chunks, metadatas=metadatas)
+            logger.info(f"  📦 Embedded {len(chunks)} chunks into ChromaDB")
 
-        source_id = os.path.splitext(filename)[0]
+            # Summarize
+            summary = await self._generate_summary(doc['content'])
+            all_summaries.append(f"--- Source: {doc['filename']} ---\n{summary}")
 
-        # Step 0: Filter for durable knowledge
-        logger.info("🔬 Filtering content for durable knowledge...")
-        progress_manager.broadcast("Analyzing content quality", 8)
-        is_durable, filter_reason = await self._filter_content(content)
+        # 2. Extract Global Concepts
+        logger.info(f"\n{'='*60}")
+        logger.info(f"🔍 CONCEPT EXTRACTION PHASE")
+        logger.info(f"{'='*60}")
+        progress_manager.broadcast("Extracting global concepts", 40)
+        combined_summaries = "\n\n".join(all_summaries)
+        logger.info(f"📊 Combined summaries ({len(combined_summaries)} chars):\n{combined_summaries[:500]}")
+        concepts = await self._extract_global_concepts(topic, combined_summaries)
 
-        if not is_durable:
-            logger.info(f"⏭️ Content filtered as noise: {filter_reason}")
-            progress_manager.broadcast("Content filtered as noise — skipping", 100, "success")
-            self._update_log(source_id, [], [])
-            return {
-                "status": "filtered",
-                "reason": filter_reason,
-                "pages_created": [],
-                "pages_updated": [],
-            }
+        if not concepts:
+            logger.warning("⚠️ No concepts extracted even after retry. Falling back to generic topic concept.")
+            concepts = [{"name": topic.lower().replace(" ", "-"), "description": f"Main entry for {topic}"}]
 
-        # Step 1: Extract entities
-        logger.info("🔍 Extracting entities from raw document...")
-        progress_manager.broadcast("Extracting entities and concepts", 10)
-        entities = await self._extract_entities(content)
-
-        if not entities:
-            logger.info("⚠️ No entities extracted — creating summary page as fallback")
-            entities = [{
-                "name": source_id,
-                "description": f"Summary of {filename}",
-                "action": "NEW",
-            }]
-
-        # Step 2: Multi-page synthesis
+        # 3. Write Concept Articles using RAG
         created_pages = []
         updated_pages = []
-        pages_touched = {}
+        
+        for i, concept in enumerate(concepts):
+            pct = 50 + int((i/max(len(concepts), 1)) * 40)
+            logger.info(f"📝 Writing article for concept: {concept['name']}")
+            progress_manager.broadcast(f"Writing article: {concept['name']}", pct)
+            
+            page_content = await self._synthesize_concept_article(concept)
+            if page_content:
+                page_name = f"{concept['name']}.md"
+                existing = os.path.exists(os.path.join(self.wiki_dir, page_name))
+                self._write_wiki_page(page_name, page_content)
 
-        total_entities = len(entities)
-        logger.info(f"📝 Synthesizing {total_entities} wiki pages...")
+                # Embed the new wiki page back into Chroma so it can be queried
+                self.query_engine.add_documents(
+                    chunks=[page_content],
+                    metadatas=[{"source": page_name, "type": "wiki_page"}]
+                )
 
-        for i, entity in enumerate(entities):
-            pct = 40 + int((i / max(total_entities, 1)) * 45)
-            page_name = f"{entity['name']}.md"
-            action = "Creating" if entity["action"] == "NEW" else "Updating"
-            msg = f"{action} {page_name} ({i+1}/{total_entities})"
-            logger.info(f"  ✏️ {msg}")
-            progress_manager.broadcast(msg, pct)
+                if existing:
+                    updated_pages.append(concept['name'])
+                else:
+                    created_pages.append(concept['name'])
+            
+            if (i+1) % 5 == 0:
+                self._update_index(created_pages + updated_pages)
 
-            try:
-                page_content = await self._synthesize_page(entity, content, source_id)
-                if page_content and page_content.strip():
-                    existing = os.path.exists(os.path.join(self.wiki_dir, page_name))
-                    self._write_wiki_page(page_name, page_content)
-                    pages_touched[page_name] = entity["description"]
+        # 4. Finalize
+        progress_manager.broadcast("Updating index and log", 95)
+        self._update_index(created_pages + updated_pages)
+        self._update_log(f"Corpus: {topic}", created_pages, updated_pages)
 
-                    # Add to Chroma VectorStore
-                    self.query_engine.add_documents(
-                        chunks=[page_content],
-                        metadatas=[{"source": page_name}]
-                    )
-
-                    if existing:
-                        updated_pages.append(entity["name"])
-                    else:
-                        created_pages.append(entity["name"])
-                    
-                    # Periodic index update for better UI feedback
-                    if (len(created_pages) + len(updated_pages)) % 5 == 0:
-                        self._update_index(pages_touched)
-            except Exception as e:
-                logger.error(f"  ❌ Error synthesizing {page_name}: {e}")
-                continue
-
-        # Step 3: Update index
-        logger.info("📇 Updating index.md...")
-        progress_manager.broadcast("Updating index", 88)
-        self._update_index(pages_touched)
-
-        # Step 4: Update log
-        logger.info("📋 Updating log.md...")
-        progress_manager.broadcast("Writing compilation log", 90)
-        self._update_log(source_id, created_pages, updated_pages)
-
-        # Step 5: Git commit
-        logger.info("📦 Committing to Git...")
-        progress_manager.broadcast("Committing to Git", 95)
-        if self.git_manager.commit_changes(f"Ingest: {filename} — {len(created_pages)} created, {len(updated_pages)} updated"):
+        if self.git_manager.commit_changes(f"Ingest Corpus: {topic} — {len(created_pages)} created, {len(updated_pages)} updated"):
             logger.info("  ✅ Changes committed")
 
-        summary = {
+        summary_result = {
             "status": "success",
-            "source": filename,
-            "model": self.model_id,
+            "topic": topic,
+            "documents_processed": len(documents),
             "pages_created": created_pages,
             "pages_updated": updated_pages,
-            "total_pages_touched": len(created_pages) + len(updated_pages),
         }
-
-        logger.info(f"✅ Ingestion complete: {summary['total_pages_touched']} pages touched")
-        progress_manager.broadcast(
-            f"Complete! {len(created_pages)} created, {len(updated_pages)} updated",
-            100,
-            "success",
-        )
-
-        return summary
+        
+        progress_manager.broadcast(f"Complete! {len(created_pages)} created.", 100, "success")
+        return summary_result
 
     def remove_wiki_page(self, filename: str) -> bool:
-        """
-        Delete a wiki page and update the index/git repo.
-        """
         path = os.path.join(self.wiki_dir, filename)
         if os.path.exists(path):
             os.remove(path)
-            logger.info(f"🗑️ Deleted wiki page: {filename}")
-            
-            # Update index (pass empty dict as no pages were 'touched' by synthesis)
-            self._update_index({})
-            
-            # Commit
+            self._update_index([])
             self.git_manager.commit_changes(f"Delete wiki page: {filename}")
             return True
         return False

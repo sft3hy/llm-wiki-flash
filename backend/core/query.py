@@ -1,4 +1,5 @@
 import os
+import re
 from langchain_ollama import OllamaEmbeddings
 from langchain_chroma import Chroma
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -24,9 +25,13 @@ class QueryEngine:
             return
         self.vectorstore.add_texts(texts=chunks, metadatas=metadatas)
 
-    async def search(self, query: str, k: int = 3):
+    async def search(self, query: str, k: int = 3, document: str = None):
         """Semantic search returning formatted string context."""
-        results = self.vectorstore.similarity_search(query, k=k)
+        search_kwargs = {"k": k}
+        if document:
+            search_kwargs["filter"] = {"source": document}
+            
+        results = self.vectorstore.similarity_search(query, **search_kwargs)
         if not results:
             return ""
         
@@ -37,20 +42,39 @@ class QueryEngine:
             
         return "\n\n".join(context_parts)
 
-    async def qa_query(self, query: str, history: list[dict] = None, model_id: str = None) -> dict:
+    def _get_available_pages(self) -> list[str]:
+        if not os.path.exists(self.wiki_dir):
+            return []
+        pages = []
+        for f in os.listdir(self.wiki_dir):
+            if f.endswith(".md") and f not in ("SCHEMA.md", "index.md", "log.md"):
+                pages.append(f.replace(".md", ""))
+        return pages
+
+    async def qa_query(self, query: str, history: list[dict] = None, model_id: str = None, document: str = None) -> dict:
         """Perform full retrieval-augmented generation."""
         # 1. Retrieve Context
-        context = await self.search(query, k=4)
+        context = await self.search(query, k=4, document=document)
         if not context:
             context = "No relevant context found in wiki."
             
         # 2. Formulate QA Prompt
+        available_pages = self._get_available_pages()
+        pages_str = ", ".join(available_pages) if available_pages else "None"
+        
         system_instr = f"""IMPORTANT: PROVIDE DIRECT RESPONSES ONLY. DO NOT INCLUDE ANY INTERNAL MONOLOGUES, THINKING, OR <thought> TAGS.
 
 You are a helpful assistant for the LLM Wiki knowledge base. 
 Answer concisely and accurately based ONLY on the provided WIKI CONTEXT. 
 If the context does not contain the answer, explicitly state that you cannot answer based on the context.
-Use [[wikilinks]] when referencing wiki pages.
+
+AVAILABLE WIKI PAGES:
+{pages_str}
+
+LINKING RULES:
+1. You may link to existing concepts using [[Page Name]] syntax.
+2. You MUST ONLY link to pages listed in the AVAILABLE WIKI PAGES.
+3. NEVER hallucinate or invent new page links. If a concept is not in the list, DO NOT use brackets.
 
 WIKI CONTEXT:
 {context}"""
@@ -69,6 +93,19 @@ WIKI CONTEXT:
         
         # 3. Call LLM
         response = await call_with_fallback(messages, "chat", model_id=model_id)
+        
+        # 4. Post-process response for links
+        def replace_link(match):
+            page_name = match.group(1).strip()
+            # Find a case-insensitive match in available_pages
+            valid_page = next((p for p in available_pages if p.lower() == page_name.lower()), None)
+            if valid_page:
+                return f"[{page_name}](wiki://{valid_page})"
+            else:
+                return f"[{page_name}](unresolved://{page_name})"
+
+        if response:
+            response = re.sub(r'\[\[(.*?)\]\]', replace_link, response)
         
         return {
             "response": response,

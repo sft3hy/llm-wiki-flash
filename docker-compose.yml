@@ -11,6 +11,7 @@ services:
     volumes:
       - ./backend:/app
       - ./data:/app/data
+      - /Users/samueltownsend:/Users/samueltownsend:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: always

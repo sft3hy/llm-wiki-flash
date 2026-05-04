@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, User, Bot, Sparkles, Cpu, Cloud } from 'lucide-react';
 import axios from 'axios';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 interface Message {
   id: string;
@@ -13,11 +15,21 @@ interface Message {
 
 const API_BASE = "http://localhost:8000";
 
-interface ChatViewProps {
-  selectedModel: string;
+interface Model {
+  model_id: string;
+  display_name: string;
 }
 
-const ChatView: React.FC<ChatViewProps> = ({ selectedModel }) => {
+interface ChatViewProps {
+  selectedModel: string;
+  models: Model[];
+  wikiPages: string[];
+  onNavigate?: (page: string) => void;
+}
+
+const ChatView: React.FC<ChatViewProps> = ({ selectedModel, models, wikiPages, onNavigate }) => {
+  const [overrideModel, setOverrideModel] = useState<string>('');
+  const [selectedDocument, setSelectedDocument] = useState<string>('');
   const [input, setInput] = useState('');
   const [expandedContext, setExpandedContext] = useState<Record<string, boolean>>({});
   const [messages, setMessages] = useState<Message[]>([
@@ -44,18 +56,10 @@ const ChatView: React.FC<ChatViewProps> = ({ selectedModel }) => {
   };
 
   const getModelDisplayName = (modelId: string) => {
-    const names: Record<string, string> = {
-      'auto-smart': 'Smart (Auto Tiering)',
-      'llama3.2:1b': 'Llama 3.2 (Fast)',
-      'gemma4:e4b': 'Gemma 4 Medium',
-      'llama-3.3-70b-versatile': 'Llama 3.3 70B',
-      'openai/gpt-oss-120b': 'GPT-OSS 120B',
-      'meta-llama/llama-4-scout-17b-16e-instruct': 'Llama 4 Scout',
-    };
-    return names[modelId] || modelId;
+    return models.find(m => m.model_id === modelId)?.display_name || modelId;
   };
 
-  const isLocalModel = (modelId: string) => modelId.includes('gemma') || modelId.includes('llama3.2');
+  const isLocalModel = (modelId: string) => true; // All models are local now
 
   const handleSend = async (overrideInput?: string) => {
     const messageText = overrideInput || input;
@@ -78,10 +82,13 @@ const ChatView: React.FC<ChatViewProps> = ({ selectedModel }) => {
         content: msg.text
       }));
 
+      const modelToUse = overrideModel || selectedModel;
+
       const response = await axios.post(`${API_BASE}/chat`, {
         message: messageText,
         history: history,
-        model: selectedModel,
+        model: modelToUse,
+        document: selectedDocument || undefined,
       });
 
       const botMessage: Message = {
@@ -89,7 +96,7 @@ const ChatView: React.FC<ChatViewProps> = ({ selectedModel }) => {
         text: response.data.response,
         sender: 'bot',
         timestamp: new Date(),
-        model: selectedModel,
+        model: modelToUse,
         context: response.data.context,
       };
       setMessages(prev => [...prev, botMessage]);
@@ -164,9 +171,53 @@ const ChatView: React.FC<ChatViewProps> = ({ selectedModel }) => {
                 ? 'glass rounded-tl-none border-white/10 text-white/90' 
                 : 'bg-primary/20 border-primary/20 rounded-tr-none text-white'
               }`}>
-                <p className="text-sm leading-relaxed whitespace-pre-wrap">
-                  {msg.text}
-                </p>
+                {msg.sender === 'bot' ? (
+                  <ReactMarkdown 
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      h1: ({node, ...props}: any) => <h1 className="text-xl font-bold mt-4 mb-2 text-white" {...props} />,
+                      h2: ({node, ...props}: any) => <h2 className="text-lg font-bold mt-3 mb-2 text-white" {...props} />,
+                      h3: ({node, ...props}: any) => <h3 className="text-base font-bold mt-2 mb-1 text-white" {...props} />,
+                      p: ({node, ...props}: any) => <p className="text-sm leading-relaxed mb-2 text-white/90 whitespace-pre-wrap" {...props} />,
+                      ul: ({node, ...props}: any) => <ul className="list-disc list-outside ml-4 mb-2 space-y-1 text-sm text-white/90" {...props} />,
+                      ol: ({node, ...props}: any) => <ol className="list-decimal list-outside ml-4 mb-2 space-y-1 text-sm text-white/90" {...props} />,
+                      li: ({node, ...props}: any) => <li {...props} />,
+                      strong: ({node, ...props}: any) => <strong className="font-bold text-white" {...props} />,
+                      em: ({node, ...props}: any) => <em className="italic text-white/80" {...props} />,
+                      code: ({node, inline, ...props}: any) => inline 
+                        ? <code className="bg-black/30 text-emerald-400 px-1 py-0.5 rounded text-xs font-mono" {...props} /> 
+                        : <code className="block bg-black/50 text-emerald-400 p-3 rounded-lg text-xs font-mono overflow-x-auto mb-2" {...props} />,
+                      a: ({ node, href, children, ...props }: any) => {
+                        if (href?.startsWith('wiki://')) {
+                          const pageName = decodeURIComponent(href.replace('wiki://', ''));
+                          return (
+                            <button
+                              onClick={() => onNavigate && onNavigate(`${pageName}.md`)}
+                              className="text-primary hover:text-primary/80 underline decoration-primary/50 underline-offset-4 cursor-pointer font-semibold transition-colors"
+                              title={`Navigate to ${pageName}`}
+                            >
+                              {children}
+                            </button>
+                          );
+                        } else if (href?.startsWith('unresolved://')) {
+                          return (
+                            <span 
+                              className="text-white/40 underline decoration-dashed decoration-red-500/50 underline-offset-4 cursor-help"
+                              title="This page does not exist yet"
+                            >
+                              {children}
+                            </span>
+                          );
+                        }
+                        return <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline underline-offset-2" {...props}>{children}</a>;
+                      }
+                    }}
+                  >
+                    {msg.text}
+                  </ReactMarkdown>
+                ) : (
+                  <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.text}</p>
+                )}
                 <div className="flex items-center justify-between mt-2">
                   <span className="text-[10px] opacity-30 block font-mono">
                     {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -217,7 +268,31 @@ const ChatView: React.FC<ChatViewProps> = ({ selectedModel }) => {
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="p-8">
+      <div className="p-8 space-y-4">
+        <div className="flex items-center space-x-4 px-2">
+          <div className="flex items-center space-x-2">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-white/40">Scope:</span>
+            <select 
+              className="bg-[#0a0c12] border border-white/10 rounded-lg px-2 py-1 text-xs text-white/80 focus:outline-none focus:border-primary/50"
+              value={selectedDocument}
+              onChange={(e) => setSelectedDocument(e.target.value)}
+            >
+              <option value="">All Knowledge Base</option>
+              {wikiPages.map(p => <option key={p} value={p}>{p.replace('.md', '')}</option>)}
+            </select>
+          </div>
+          <div className="flex items-center space-x-2">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-white/40">Model:</span>
+            <select 
+              className="bg-[#0a0c12] border border-white/10 rounded-lg px-2 py-1 text-xs text-white/80 focus:outline-none focus:border-primary/50"
+              value={overrideModel}
+              onChange={(e) => setOverrideModel(e.target.value)}
+            >
+              <option value="">Use Master Model ({getModelDisplayName(selectedModel)})</option>
+              {models.map(m => <option key={m.model_id} value={m.model_id}>{m.display_name}</option>)}
+            </select>
+          </div>
+        </div>
         <div className="relative group">
           <div className="absolute -inset-1 bg-gradient-to-r from-primary/50 to-blue-500/50 rounded-[2rem] blur opacity-20 group-focus-within:opacity-40 transition duration-1000"></div>
           <div className="relative flex items-center bg-[#0a0c12] border border-white/10 rounded-[1.5rem] p-2 pl-6 shadow-2xl focus-within:border-primary/50 transition-all">
@@ -240,7 +315,7 @@ const ChatView: React.FC<ChatViewProps> = ({ selectedModel }) => {
         </div>
         <p className="text-[10px] text-center text-white/20 mt-4 uppercase tracking-[0.2em] font-bold">
           <Sparkles className="w-3 h-3 inline-block mr-1 mb-0.5" />
-          Wiki Intelligence Engine • {getModelDisplayName(selectedModel)}
+          Wiki Intelligence Engine • {getModelDisplayName(overrideModel || selectedModel)}
         </p>
       </div>
     </div>

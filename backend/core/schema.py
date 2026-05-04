@@ -44,46 +44,47 @@ sources: [raw-file-id-1, raw-file-id-2]
 status: stub | stable | conflicting
 ---"""
 
-# ─── Entity Extraction Prompt ──────────────────────────────────────────
-ENTITY_EXTRACTION_PROMPT = """Extract key concepts from this text. For each concept output one line in this EXACT format:
+# ─── Corpus Summary Prompt ──────────────────────────────────────────────
+CORPUS_SUMMARY_PROMPT = """Read the following document and provide a concise, high-level summary (1 paragraph) focusing entirely on the core concepts, theories, and factual information presented. Ignore fluff or formatting.
 
-ENTITY: kebab-case-name | one-line description | NEW
-
-Example output:
-ENTITY: machine-learning | A subset of AI that learns from data | NEW
-ENTITY: neural-network | Computing system inspired by biological brains | NEW
-ENTITY: deep-learning | Neural networks with many layers | NEW
-
-Now extract concepts from this text:
+Document:
 {content}
 
-Existing wiki pages (use UPDATE instead of NEW if the concept already exists):
-{existing_pages}
+Summary:"""
 
-Output ONLY lines starting with "ENTITY:". No other text."""
+# ─── Concept Extraction Prompt ──────────────────────────────────────────
+CONCEPT_EXTRACTION_PROMPT = """I have a corpus of raw sources on "{topic}" from the following documents:
+{source_summaries}
+
+Read all of these summaries and identify the major underlying concepts. Organize by concept — not by source or by person.
+Output a strict JSON list of concepts in this EXACT format:
+[
+  {{ "name": "kebab-case-concept-name", "description": "Brief description of the concept" }}
+]
+
+IMPORTANT: Output ONLY the raw JSON array. Do not include markdown code blocks (like ```json), no preamble, no explanation. Just the array.
+"""
 
 
-# ─── Page Synthesis Prompt ─────────────────────────────────────────────
-SYNTHESIS_PROMPT = """You are a Wiki Compiler. Strictly adhere to the SCHEMA rules.
+# ─── Concept Article Generation Prompt ─────────────────────────────────
+CONCEPT_ARTICLE_PROMPT = """You are a Wiki Knowledge Engineer. Your task is to write a standalone wiki article about "{concept_name}" for a curious non-expert.
 
-Your task: Create or update the wiki page for "{entity_name}".
+Here is the retrieved text from various sources regarding this concept:
+{retrieved_context}
 
+Write a standalone article that:
+1. Explains what the concept is in plain language.
+2. Summarizes what the key ideas and evidence say.
+3. Notes where the sources agree.
+4. Specifically flags where they disagree and why (using a "## Disagreements" section if applicable).
+5. Links to related concepts within the wiki using [[concept-name]] syntax.
+6. Starts with proper YAML frontmatter.
+
+Existing content to preserve and integrate (if any):
 {existing_content_section}
 
-New information to integrate from source [[{source_id}]]:
-{new_information}
-
-Rules:
-1. If updating an existing page, INTEGRATE the new information into the existing 
-   structure. Do not overwrite or remove existing content.
-2. If creating a new page, start with proper YAML frontmatter.
-3. Use [[wikilinks]] for all mentions of other concepts.
-4. Keep the page under 1000 words. If it would exceed this, note which sections 
-   should be split into sub-pages.
-5. End with a provenance line: Source: [[{source_id}]]
-6. If new info contradicts existing content, add a ## Conflict section.
-
-Write the complete page content now:"""
+Write the complete page content now, keeping it under 1000 words.
+"""
 
 # ─── Cleanup/De-duplication Prompt ─────────────────────────────────────
 CLEANUP_PROMPT = """Scan the provided file list and their summaries. 

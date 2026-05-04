@@ -8,10 +8,11 @@ import ChatView from './components/ChatView';
 import SettingsView from './components/SettingsView';
 import MeditationView from './components/MeditationView';
 import ModelSelector from './components/ModelSelector';
+import IngestView from './components/IngestView';
 
 const API_BASE = "http://localhost:8000";
 
-type ViewType = 'wiki' | 'chat' | 'settings' | 'maintenance' | 'graph';
+type ViewType = 'wiki' | 'chat' | 'settings' | 'maintenance' | 'graph' | 'upload';
 
 interface Model {
   model_id: string;
@@ -34,7 +35,6 @@ function App() {
   // Model state
   const [models, setModels] = useState<Model[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>('');
-  const [groqConfigured, setGroqConfigured] = useState(false);
 
   useEffect(() => {
     fetchWikiPages();
@@ -45,7 +45,6 @@ function App() {
     try {
       const response = await axios.get(`${API_BASE}/models`);
       setModels(response.data.models);
-      setGroqConfigured(response.data.groq_configured);
       // Restore from localStorage or use default
       const stored = localStorage.getItem('llm-wiki-model');
       if (stored && response.data.models.find((m: Model) => m.model_id === stored)) {
@@ -113,20 +112,9 @@ function App() {
     }
   };
 
-  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    const formData = new FormData();
-    formData.append('file', file);
-
-    try {
-      await axios.post(`${API_BASE}/ingest?model=${selectedModel}`, formData);
-      await fetchWikiPages();
-    } catch (error) {
-      console.error("Error uploading file:", error);
-      alert("Ingestion failed.");
-    }
+  const handleIngestSuccess = async () => {
+    await fetchWikiPages();
+    setActiveView('wiki');
   };
 
   // Poll for new pages during ingestion so the sidebar stays current
@@ -271,13 +259,15 @@ function App() {
             <span className="text-sm font-medium">Settings</span>
           </button>
           
-          <label className="flex items-center space-x-3 px-3 py-3 rounded-xl bg-white/5 hover:bg-white/10 cursor-pointer transition-all border border-white/5 group">
+          <button 
+            onClick={() => setActiveView('upload')}
+            className={`w-full flex items-center space-x-3 px-3 py-3 rounded-xl hover:bg-white/10 transition-all border border-white/5 group ${activeView === 'upload' ? 'bg-white/10' : 'bg-white/5'}`}
+          >
             <div className={`p-1.5 rounded-lg bg-primary/10 text-primary group-hover:scale-110 transition-transform ${isIngesting ? "animate-pulse" : ""}`}>
               <Upload className="w-4 h-4" />
             </div>
             <span className="text-xs font-semibold tracking-wide">Upload Source</span>
-            <input type="file" className="hidden" onChange={handleFileUpload} disabled={isIngesting} />
-          </label>
+          </button>
         </div>
       </aside>
 
@@ -300,7 +290,6 @@ function App() {
                models={models}
                selectedModel={selectedModel}
                onModelChange={handleModelChange}
-               groqConfigured={groqConfigured}
              />
              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-purple-600 to-blue-600 flex items-center justify-center text-white text-xs font-black shadow-xl border border-white/10 ml-2 cursor-pointer hover:scale-105 transition-transform">
                ST
@@ -315,8 +304,8 @@ function App() {
               <div className="flex items-center space-x-4 flex-1">
                 <div className="relative">
                   <div className="absolute inset-0 bg-primary/20 rounded-full blur-md animate-pulse"></div>
-                  <div className={`p-2 rounded-lg bg-primary/10 text-primary ${ingestProgress.status === 'processing' ? 'animate-spin' : ''}`}>
-                    <Activity className="w-4 h-4" />
+                  <div className={`p-2 rounded-lg bg-primary/10 text-primary ${ingestProgress.status === 'processing' ? 'animate-book-flip' : ''}`}>
+                    <BookOpen className={`w-4 h-4 ${ingestProgress.status === 'processing' ? 'animate-page-turn' : ''}`} />
                   </div>
                 </div>
                 <div className="flex flex-col">
@@ -371,14 +360,28 @@ function App() {
               <KnowledgeGraph pages={wikiPages} onNodeClick={(node) => { fetchPageContent(node.id); }} />
             </div>
           ) : activeView === 'chat' ? (
-            <ChatView selectedModel={selectedModel} />
+            <ChatView 
+              selectedModel={selectedModel} 
+              models={models} 
+              wikiPages={wikiPages} 
+              onNavigate={(page) => {
+                setSelectedPage(page);
+                setActiveView('wiki');
+              }}
+            />
           ) : activeView === 'settings' ? (
             <SettingsView 
               models={models}
               selectedModel={selectedModel}
               onModelChange={handleModelChange}
-              groqConfigured={groqConfigured}
               wikiPages={wikiPages}
+            />
+          ) : activeView === 'upload' ? (
+            <IngestView 
+              masterModel={selectedModel}
+              models={models}
+              onSuccess={handleIngestSuccess}
+              isIngesting={isIngesting}
             />
           ) : activeView === 'maintenance' ? (
             <MeditationView pages={wikiPages} selectedModel={selectedModel} />

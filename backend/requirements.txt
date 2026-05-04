@@ -9,10 +9,8 @@ pydantic-settings
 python-dotenv
 markdown
 PyYAML
-langchain-groq
 langchain-ollama
 langchain-chroma
+langchain-text-splitters
 langgraph
 sse-starlette
-langchain-text-splitters
-groq

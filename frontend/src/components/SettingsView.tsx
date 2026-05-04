@@ -17,11 +17,10 @@ interface SettingsViewProps {
   models: Model[];
   selectedModel: string;
   onModelChange: (modelId: string) => void;
-  groqConfigured: boolean;
   wikiPages: string[];
 }
 
-const SettingsView: React.FC<SettingsViewProps> = ({ models, selectedModel, onModelChange, groqConfigured, wikiPages }) => {
+const SettingsView: React.FC<SettingsViewProps> = ({ models, selectedModel, onModelChange, wikiPages }) => {
   const [schemaContent, setSchemaContent] = useState('');
   const [showSchema, setShowSchema] = useState(false);
   const [rawSources, setRawSources] = useState<string[]>([]);
@@ -57,8 +56,6 @@ const SettingsView: React.FC<SettingsViewProps> = ({ models, selectedModel, onMo
     }
   };
 
-  const ollamaModels = models.filter(m => m.provider === 'ollama');
-  const groqModels = models.filter(m => m.provider === 'groq');
   const systemPages = ['index.md', 'log.md', 'SCHEMA.md'];
   const contentPages = wikiPages.filter(p => !systemPages.includes(p));
   const currentProvider = models.find(m => m.model_id === selectedModel)?.provider;
@@ -84,7 +81,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ models, selectedModel, onMo
               <Cpu className="w-4 h-4 text-emerald-400" />
               <span className="text-xs font-bold uppercase tracking-widest text-emerald-400/60">Local · Ollama</span>
             </div>
-            {ollamaModels.map(m => (
+            {models.map(m => (
               <button key={m.model_id} onClick={() => onModelChange(m.model_id)}
                 className={`w-full flex items-center justify-between p-4 rounded-xl transition-all border ${
                   selectedModel === m.model_id ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-white/[0.02] border-white/5 hover:bg-white/5'
@@ -96,33 +93,6 @@ const SettingsView: React.FC<SettingsViewProps> = ({ models, selectedModel, onMo
                 {selectedModel === m.model_id && <Check className="w-4 h-4 text-emerald-400" />}
               </button>
             ))}
-          </div>
-          <div className="space-y-3 pt-2">
-            <div className="flex items-center space-x-2">
-              <Cloud className="w-4 h-4 text-violet-400" />
-              <span className="text-xs font-bold uppercase tracking-widest text-violet-400/60">Cloud · Groq</span>
-              {groqConfigured
-                ? <span className="text-[9px] bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded-full font-bold">✓ Active</span>
-                : <span className="text-[9px] bg-amber-500/10 text-amber-400 px-2 py-0.5 rounded-full font-bold">No Key</span>}
-            </div>
-            {groqModels.map(m => (
-              <button key={m.model_id} onClick={() => onModelChange(m.model_id)} disabled={!groqConfigured}
-                className={`w-full flex items-center justify-between p-4 rounded-xl transition-all border ${
-                  !groqConfigured ? 'opacity-40 cursor-not-allowed border-white/5'
-                  : selectedModel === m.model_id ? 'bg-violet-500/10 border-violet-500/20' : 'bg-white/[0.02] border-white/5 hover:bg-white/5'
-                }`}>
-                <div className="text-left">
-                  <p className="text-sm font-semibold text-white">{m.display_name}</p>
-                  <p className="text-[11px] text-white/40 mt-0.5">{m.description}</p>
-                </div>
-                {selectedModel === m.model_id && <Check className="w-4 h-4 text-violet-400" />}
-              </button>
-            ))}
-            {!groqConfigured && (
-              <p className="text-xs text-amber-400/50 px-2">
-                Set <code className="bg-white/5 px-1.5 py-0.5 rounded text-[10px]">GROQ_API_KEY</code> in your .env to enable cloud models.
-              </p>
-            )}
           </div>
         </section>
 

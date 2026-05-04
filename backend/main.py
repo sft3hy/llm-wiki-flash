@@ -9,7 +9,9 @@ from core.ingest import IngestEngine
 from core.benchmarker import Benchmarker
 from core.lint import LintEngine
 from core.llm_provider import get_llm, call_with_fallback
-from config import settings, AVAILABLE_MODELS
+from config import settings
+import urllib.request
+import json
 from utils.progress import progress_manager
 from sse_starlette.sse import EventSourceResponse
 import logging
@@ -45,9 +47,15 @@ class ChatRequest(BaseModel):
     message: str
     history: Optional[List[dict]] = []
     model: Optional[str] = None
+    document: Optional[str] = None
 
 class WikiEditRequest(BaseModel):
     content: str
+
+class VaultIngestRequest(BaseModel):
+    path: str
+    topic: str
+    model: Optional[str] = None
 
 
 # ─── Health ────────────────────────────────────────────────────────────
@@ -61,11 +69,33 @@ async def root():
 
 @app.get("/models")
 async def list_models():
-    """Return all available models with provider metadata."""
+    """Return all available models from Ollama."""
+    try:
+        req = urllib.request.Request(f"{settings.OLLAMA_BASE_URL}/api/tags")
+        with urllib.request.urlopen(req) as response:
+            data = json.loads(response.read())
+            models = []
+            for m in data.get("models", []):
+                if "nomic-embed" in m["name"].lower():
+                    continue
+                models.append({
+                    "model_id": m["name"],
+                    "display_name": m["name"],
+                    "provider": "ollama",
+                    "description": f"Local Ollama model: {m['name']}"
+                })
+    except Exception as e:
+        logger.warning(f"Could not fetch models from Ollama: {e}")
+        # Fallback to defaults if Ollama is unreachable
+        models = [
+            {"model_id": "gemma4:e4b", "display_name": "Gemma 4 Medium", "provider": "ollama", "description": "Google's Gemma 4"},
+            {"model_id": "llama3.2:1b", "display_name": "Llama 3.2 1B (Fast)", "provider": "ollama", "description": "Meta's Llama 3.2"},
+        ]
+        
     return {
-        "models": [m.to_dict() for m in AVAILABLE_MODELS],
+        "models": models,
         "default": settings.DEFAULT_MODEL,
-        "groq_configured": bool(settings.GROQ_API_KEY),
+        "groq_configured": False,
     }
 
 
@@ -89,7 +119,8 @@ async def chat(request: ChatRequest):
         result = await engine.qa_query(
             query=request.message,
             history=request.history,
-            model_id=request.model
+            model_id=request.model,
+            document=request.document
         )
         
         return {"response": result["response"], "context": result["context"]}
@@ -102,28 +133,78 @@ async def chat(request: ChatRequest):
 
 @app.post("/ingest")
 async def ingest_source(
-    file: UploadFile = File(...),
+    files: List[UploadFile] = File(...),
+    topic: str = Query(..., description="Topic of the corpus"),
     model: Optional[str] = Query(None, description="Model ID to use for ingestion"),
 ):
-    # Save file to RAW_DIR
-    file_path = os.path.join(RAW_DIR, file.filename)
+    documents = []
     os.makedirs(RAW_DIR, exist_ok=True)
-    with open(file_path, "wb") as f:
-        f.write(await file.read())
+    
+    for file in files:
+        # Save file to RAW_DIR temporarily (optional, but good for raw backup)
+        file_path = os.path.join(RAW_DIR, file.filename)
+        content_bytes = await file.read()
+        
+        try:
+            content_str = content_bytes.decode('utf-8')
+        except UnicodeDecodeError:
+            # Skip binary files if any slipped through
+            continue
+
+        with open(file_path, "wb") as f:
+            f.write(content_bytes)
+
+        documents.append({
+            "filename": file.filename,
+            "content": content_str,
+            "source_type": "upload"
+        })
+
+    if not documents:
+        raise HTTPException(status_code=400, detail="No readable text files uploaded.")
 
     # Trigger Ingest Engine with selected model
     engine = IngestEngine(RAW_DIR, WIKI_DIR, model_id=model)
-    result = await engine.process_file(file.filename)
+    result = await engine.process_corpus(topic, documents)
 
-    return {
-        "status": result.get("status", "success"),
-        "filename": file.filename,
-        "model": engine.model_id,
-        "pages_created": result.get("pages_created", []),
-        "pages_updated": result.get("pages_updated", []),
-        "total_pages_touched": result.get("total_pages_touched", 0),
-        "message": "Ingestion completed",
-    }
+    return result
+
+@app.post("/ingest/vault")
+async def ingest_vault(request: VaultIngestRequest):
+    # Strip quotes if they were pasted in
+    clean_path = request.path.strip().strip("'").strip('"')
+    vault_path = os.path.abspath(clean_path)
+    
+    if not os.path.exists(vault_path) or not os.path.isdir(vault_path):
+        logger.error(f"Vault path does not exist or is not a directory: {vault_path}")
+        raise HTTPException(status_code=400, detail=f"Invalid vault path: {vault_path}. Ensure it is an absolute path and accessible by the backend.")
+
+    documents = []
+    # Recursively scan for markdown files
+    for root_dir, _, files in os.walk(vault_path):
+        for file in files:
+            if file.endswith(('.md', '.txt')):
+                full_path = os.path.join(root_dir, file)
+                try:
+                    with open(full_path, "r", encoding="utf-8") as f:
+                        content_str = f.read()
+                    
+                    documents.append({
+                        "filename": os.path.relpath(full_path, vault_path).replace('/', '-'),
+                        "content": content_str,
+                        "source_type": "vault"
+                    })
+                except Exception as e:
+                    logger.warning(f"Failed to read vault file {full_path}: {e}")
+
+    if not documents:
+        logger.error(f"No readable markdown/text files found in vault path: {vault_path}")
+        raise HTTPException(status_code=400, detail=f"No readable markdown/text files found in vault: {vault_path}")
+
+    engine = IngestEngine(RAW_DIR, WIKI_DIR, model_id=request.model)
+    result = await engine.process_corpus(request.topic, documents)
+
+    return result
 
 
 # ─── Raw Management ───────────────────────────────────────────────────
@@ -200,18 +281,32 @@ async def meditate(model: Optional[str] = Query(None)):
     if not pending_files:
         return {"status": "success", "message": "Wiki is already up to date.", "processed": 0}
         
-    # 3. Process each pending file
+    # 3. Read pending files and process as a corpus
     engine = IngestEngine(RAW_DIR, WIKI_DIR, model_id=model)
-    results = []
+    documents = []
     for filename in pending_files:
-        res = await engine.process_file(filename)
-        results.append(res)
+        file_path = os.path.join(RAW_DIR, filename)
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                content_str = f.read()
+            documents.append({
+                "filename": filename,
+                "content": content_str,
+                "source_type": "maintenance"
+            })
+        except Exception as e:
+            logger.warning(f"Could not read pending file {filename}: {e}")
+
+    if not documents:
+        return {"status": "success", "message": "No readable pending files found.", "processed": 0}
+
+    result = await engine.process_corpus("Maintenance Update", documents)
         
     return {
         "status": "success", 
         "message": f"Agentic maintenance complete. Synced {len(pending_files)} documents.",
         "processed": len(pending_files),
-        "details": results
+        "details": result
     }
 
 
