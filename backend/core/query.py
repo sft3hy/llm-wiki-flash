@@ -7,16 +7,17 @@ from core.llm_provider import get_llm, call_with_fallback
 from config import settings
 
 class QueryEngine:
-    def __init__(self, wiki_dir: str):
+    def __init__(self, wiki_dir: str, embeddings_dir: str = None, collection_name: str = "wiki_pages"):
         self.wiki_dir = wiki_dir
+        self.embeddings_dir = embeddings_dir or os.path.join(wiki_dir, ".chroma")
         self.embeddings = OllamaEmbeddings(
             model="nomic-embed-text",
             base_url=settings.OLLAMA_BASE_URL
         )
         self.vectorstore = Chroma(
-            collection_name="wiki_pages",
+            collection_name=collection_name,
             embedding_function=self.embeddings,
-            persist_directory=os.path.join(wiki_dir, ".chroma")
+            persist_directory=self.embeddings_dir
         )
 
     def add_documents(self, chunks: list[str], metadatas: list[dict]):
@@ -25,20 +26,39 @@ class QueryEngine:
             return
         self.vectorstore.add_texts(texts=chunks, metadatas=metadatas)
 
-    async def search(self, query: str, k: int = 3, document: str = None):
-        """Semantic search returning formatted string context."""
-        search_kwargs = {"k": k}
+    def clear(self):
+        try:
+            self.vectorstore.delete_collection()
+        except Exception:
+            pass
+        self.vectorstore = Chroma(
+            collection_name="wiki_pages",
+            embedding_function=self.embeddings,
+            persist_directory=self.embeddings_dir
+        )
+
+    async def search(self, query: str, k: int = 6, document: str = None):
+        """Semantic search returning formatted string context with MMR for diversity."""
+        search_kwargs = {"k": k, "fetch_k": 20}
         if document:
             search_kwargs["filter"] = {"source": document}
             
-        results = self.vectorstore.similarity_search(query, **search_kwargs)
+        results = self.vectorstore.max_marginal_relevance_search(query, **search_kwargs)
         if not results:
             return ""
         
         context_parts = []
+        seen_content = set()
+        
         for i, doc in enumerate(results):
+            # Normalize content for simple deduplication
+            content_norm = doc.page_content.strip()
+            if content_norm in seen_content:
+                continue
+            seen_content.add(content_norm)
+            
             source = doc.metadata.get("source", "Unknown")
-            context_parts.append(f"--- Document {i+1} (Source: {source}) ---\n{doc.page_content}")
+            context_parts.append(f"--- Document {len(context_parts)+1} (Source: {source}) ---\n{doc.page_content}")
             
         return "\n\n".join(context_parts)
 
@@ -54,7 +74,7 @@ class QueryEngine:
     async def qa_query(self, query: str, history: list[dict] = None, model_id: str = None, document: str = None) -> dict:
         """Perform full retrieval-augmented generation."""
         # 1. Retrieve Context
-        context = await self.search(query, k=4, document=document)
+        context = await self.search(query, k=6, document=document)
         if not context:
             context = "No relevant context found in wiki."
             
@@ -101,8 +121,7 @@ WIKI CONTEXT:
             valid_page = next((p for p in available_pages if p.lower() == page_name.lower()), None)
             if valid_page:
                 return f"[{page_name}](wiki://{valid_page})"
-            else:
-                return f"[{page_name}](unresolved://{page_name})"
+            return page_name
 
         if response:
             response = re.sub(r'\[\[(.*?)\]\]', replace_link, response)

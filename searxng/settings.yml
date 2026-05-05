@@ -1,0 +1,46 @@
+use_default_settings:
+  engines:
+    remove:
+      - ahmia
+      - torch
+      - wikidata
+      - braveapi
+      - brave
+      - brave.images
+      - brave.videos
+      - brave.news
+      - karmasearch
+      - karmasearch images
+      - karmasearch videos
+      - karmasearch news
+      - duckduckgo
+      - duckduckgo images
+      - duckduckgo videos
+      - duckduckgo news
+      - duckduckgo weather
+      - google
+      - google images
+      - google news
+      - google videos
+      - google scholar
+      - google play apps
+      - google play movies
+
+general:
+  debug: false
+  instance_name: "LLM Wiki Builder Search"
+
+search:
+  safe_search: 1
+  autocomplete: ""
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "change-this-searxng-secret"
+  limiter: false
+  image_proxy: true
+
+valkey:
+  url: valkey://valkey:6379/0

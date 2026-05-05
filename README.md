@@ -1,42 +1,43 @@
-# Wiki Agent (Karpathy Edition)
+# Wiki Agent (Local Edition)
 
-A persistent, compounding personal knowledge base built with an agentic LLM compilation engine. Inspired by the "LLM Wiki" concept, this system transforms raw information into a durable, structured knowledge layer.
+A persistent, compounding personal knowledge base that transforms raw information into a durable, structured knowledge layer. Built for 100% local execution using Ollama and ChromaDB.
 
-## 🧠 The Philosophy
-Unlike traditional RAG which searches raw chunks every time, **Wiki Agent** compiles knowledge *on-ingest*. It acts as a digital "second brain" that:
-1.  **Synthesizes**: Reads raw documents and extracts atomic concepts.
-2.  **Evolves**: Integrates new info into existing pages without overwriting.
-3.  **Governs**: Maintains strict schema integrity and link health.
-4.  **Compensates**: Intelligently tiers tasks between fast local models and powerful cloud models.
+## 🧠 The Philosophy: Vector vs. Wiki
+
+This system operates on two distinct layers to ensure knowledge is both searchable and durable:
+
+### 1. The Vector Layer (Ephemeral & Fast)
+Powered by **ChromaDB** and **nomic-embed-text**, this layer handles high-speed semantic retrieval.
+- **Purpose**: To find needles in haystacks. It indexes raw uploads and compiled wiki pages.
+- **Role**: Serves as the "short-term memory" for the LLM during synthesis and the engine for the Knowledge Chat.
+
+### 2. The Wiki Layer (Durable & Structured)
+The "Source of Truth" stored in `/data/wiki/` as a collection of interlinked Markdown files.
+- **Purpose**: To provide a human-readable, version-controlled repository of synthesized knowledge.
+- **Role**: Unlike raw vector chunks, the Wiki represents **Atomic Concepts**. The LLM synthesizes these articles by reading across multiple sources to resolve contradictions and build a cohesive narrative.
 
 ---
 
 ## 🏗️ System Architecture
 
 ### 📂 Backend (`/backend`)
-The backend is a FastAPI service that drives the agentic maintenance loop.
+A FastAPI service orchestrating the local intelligence pipeline.
 
-*   **`main.py`**: The API entry point. Handles chat, ingestion, and global maintenance (meditate) triggers.
-*   **`core/ingest.py`**: The **Ingest Engine**. Orchestrates the multi-step compilation process: filtering noise, extracting entities, finding relevance, and synthesizing markdown.
-*   **`core/llm_provider.py`**: The **Intelligence Tiering Layer**.
-    *   **Intelligent Tiering**: Routes small tasks (filtering) to `gemma4:e2b`, medium tasks (extraction) to `gemma4:e4b`, and hard synthesis to **Groq**.
-    *   **Resilience**: Automatically falls back to local models if Groq hits rate limits (429).
-    *   **Speed**: Suppresses "thinking" monologues for faster inference.
-*   **`core/schema.py`**: The **Constitution**. Defines the system prompts and governance rules that constrain the AI's behavior.
-*   **`core/lint.py`**: The **Librarian**. Performs non-LLM checks for broken wikilinks, orphan pages, and content conflicts.
-*   **`core/git_manager.py`**: The **Persistence Layer**. Automatically commits every wiki change to a local Git repository for full auditability and version control.
-*   **`config.py`**: Central configuration for model IDs, providers, and storage paths.
+*   **`core/ingest.py` (The Synthesis Engine)**: 
+    - **Deduplication**: Content-based hashing prevents redundant indexing.
+    - **Global Synthesis**: Instead of file-by-file processing, it looks at a whole corpus, extracts global concepts, and uses RAG to write comprehensive articles.
+*   **`core/query.py` (The Search Engine)**: 
+    - **MMR Retrieval**: Uses Max Marginal Relevance to ensure context diversity, preventing redundant snippets from blocking relevant info.
+    - **Hallucination Guard**: A two-layer system (Prompt + Regex Post-processor) that ensures `[[links]]` in chat only point to real pages.
+*   **`core/llm_provider.py`**: Standardized interface for local Ollama models. Default: `gemma4:e4b`.
+*   **`utils/git_manager.py`**: Automatically commits every wiki change to a local Git repository.
 
 ### 🎨 Frontend (`/frontend`)
-A modern, dark-mode React application built with Vite and Tailwind CSS.
+A premium React application built for exploration and ingestion.
 
-*   **`App.tsx`**: The main layout. Implements a **Chat-centric** interface where exploration is the default focus.
-*   **`components/ChatView.tsx`**: The primary interaction point. Features a "Wiki Assistant" that knows your entire indexed knowledge. Includes quick actions for empty states.
-*   **`components/MeditationView.tsx`**: The **Maintenance Center**.
-    *   **Maintenance Tab**: Trigger the global "Meditation" loop and view live compilation logs.
-    *   **Librarian Tab**: View health reports and fix broken knowledge connections.
-*   **`components/KnowledgeGraph.tsx`**: A d3-based visualization of your knowledge nodes and their relationships.
-*   **`components/ModelSelector.tsx`**: Allows switching between specific models or enabling "Smart (Auto Tiering)" mode.
+*   **Knowledge Chat**: Features full Markdown rendering and **Interactive Wikilinks**. Clicking a link in the chat instantly navigates you to that wiki page.
+*   **Unified Ingestion**: A streamlined native file/folder picker. Includes book-themed "page-turning" animations during the synthesis process.
+*   **Knowledge Graph**: A 2D force-directed graph visualizing the connections between your synthesized concepts.
 
 ---
 
@@ -44,27 +45,25 @@ A modern, dark-mode React application built with Vite and Tailwind CSS.
 
 ### Prerequisites
 - **Docker & Docker Compose**
-- **Ollama** (Running locally with `gemma4:e2b` and `gemma4:e4b` pulled)
-- **Groq API Key** (Optional, but recommended for high-quality synthesis)
+- **Ollama** installed on the host.
+- Pull the required models:
+  ```bash
+  ollama pull gemma4:e4b
+  ollama pull nomic-embed-text
+  ```
 
-### Quick Start
-1.  **Environment**: Create a `.env` file in the root:
-    ```bash
-    GROQ_API_KEY=your_key_here
-    OLLAMA_BASE_URL=http://host.docker.internal:11434
-    ```
-2.  **Launch**:
+### Launch
+1.  **Launch**:
     ```bash
     docker compose up --build
     ```
-3.  **Access**: Open `http://localhost:5173`
-4.  **Ingest**: Upload a raw source (PDF, TXT) and trigger the **Maintenance Loop**.
+2.  **Access**: `http://localhost:5173`
+3.  **Ingest**: Click "Ingest" in the sidebar, select a folder (like an Obsidian Vault) or files, and watch the system synthesize your wiki.
 
 ---
 
-## ⚖️ Governance Rules (The Schema)
-- **Atomic Decomposition**: Concepts are broken into distinct `.md` files.
-- **Kebab-Case**: All filenames must be `kebab-case-only.md`.
-- **Wikilinks**: Mentions of other pages use `[[page-name]]`.
-- **Conflicts**: Conflicting information is never deleted; it's appended to a `## Conflict` section.
-- **Provenance**: Every page ends with a reference to its source document: `Source: [[raw-doc-id]]`.
+## ⚖️ Governance (The Schema)
+- **Atomic Decomposition**: Knowledge is broken into concept-specific `.md` files.
+- **Wikilinks**: Mentions of other pages use `[[kebab-case-links]]`.
+- **Conflicts**: Contradictory info is appended to `## Conflict` sections with dates and provenance.
+- **Local First**: No data ever leaves your machine. All processing happens via Ollama.

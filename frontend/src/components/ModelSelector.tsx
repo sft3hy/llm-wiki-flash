@@ -35,15 +35,17 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ models, selectedModel, on
       {/* Trigger Button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center space-x-2.5 px-4 py-2.5 rounded-2xl bg-white/5 border border-white/10 hover:border-primary/30 hover:bg-white/[0.07] transition-all duration-300 group"
+        className="flex w-full items-center justify-between space-x-2 px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:border-primary/30 hover:bg-white/[0.07] transition-all duration-300 group"
       >
-        <div className="p-1 rounded-lg bg-emerald-500/10 text-emerald-400">
-          <Cpu className="w-3 h-3" />
+        <div className="flex min-w-0 items-center space-x-2">
+          <div className="rounded-md bg-emerald-500/10 p-1 text-emerald-400">
+            <Cpu className="h-3 w-3" />
+          </div>
+          <span className="truncate text-xs font-semibold tracking-wide text-white/80">
+            {selected?.display_name || 'Select Model'}
+          </span>
         </div>
-        <span className="text-xs font-semibold text-white/80 tracking-wide">
-          {selected?.display_name || 'Select Model'}
-        </span>
-        <ChevronDown className={`w-3.5 h-3.5 text-white/30 transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`} />
+        <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-white/30 transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
       {/* Dropdown */}
@@ -63,7 +65,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ models, selectedModel, on
                 <span>Local · Ollama</span>
               </span>
             </div>
-            {models.filter(m => m.model_id !== 'gemma4:e4b').map((model) => (
+            {models.map((model) => (
               <button
                 key={model.model_id}
                 onClick={() => { onModelChange(model.model_id); setIsOpen(false); }}

@@ -8,12 +8,17 @@ services:
       - RAW_DIR=/app/data/raw
       - WIKI_DIR=/app/data/wiki
       - OLLAMA_HOST=http://host.docker.internal:11434
+      - SEARXNG_URL=http://searxng:8080
     volumes:
       - ./backend:/app
       - ./data:/app/data
-      - /Users/samueltownsend:/Users/samueltownsend:ro
+      - type: bind
+        source: ${OBSIDIAN_VAULTS_PATH:-/Users/samueltownsend/Documents/Obsidian Vaults}
+        target: /Users/samueltownsend/Documents/Obsidian Vaults
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      - searxng
     restart: always
 
   frontend:
@@ -22,6 +27,7 @@ services:
       - "3000:5173"
     environment:
       - VITE_API_URL=http://localhost:8000
+      - VITE_SEARXNG_URL=http://localhost:8080
       - CHOKIDAR_USEPOLLING=true
     volumes:
       - ./frontend:/app
@@ -30,5 +36,28 @@ services:
       - backend
     restart: always
 
+  valkey:
+    image: docker.io/valkey/valkey:8-alpine
+    command: valkey-server --save 30 1 --loglevel warning
+    volumes:
+      - searxng-valkey:/data
+    restart: always
+
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    ports:
+      - "8080:8080"
+    environment:
+      - SEARXNG_BASE_URL=${SEARXNG_BASE_URL:-http://localhost:8080/}
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-change-this-searxng-secret}
+    volumes:
+      - ./searxng:/etc/searxng:rw
+      - searxng-cache:/var/cache/searxng:rw
+    depends_on:
+      - valkey
+    restart: always
+
 volumes:
   data:
+  searxng-valkey:
+  searxng-cache:

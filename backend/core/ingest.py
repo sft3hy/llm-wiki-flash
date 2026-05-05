@@ -1,9 +1,11 @@
 import os
 import re
+import hashlib
 from typing import List, Dict, Tuple
 import yaml
 import json
 from datetime import datetime
+from time import perf_counter
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -28,16 +30,44 @@ logging.basicConfig(
 logger = logging.getLogger("llm-wiki")
 
 class IngestEngine:
-    def __init__(self, raw_dir: str, wiki_dir: str, model_id: str = None):
+    def __init__(self, raw_dir: str, wiki_dir: str, model_id: str = None, embeddings_dir: str = None):
         self.raw_dir = raw_dir
         self.wiki_dir = wiki_dir
         self.model_id = model_id
+        self.embeddings_dir = embeddings_dir
         os.makedirs(raw_dir, exist_ok=True)
         os.makedirs(wiki_dir, exist_ok=True)
+        if embeddings_dir:
+            os.makedirs(embeddings_dir, exist_ok=True)
 
         self.git_manager = GitManager(wiki_dir)
-        self.splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
-        self.query_engine = QueryEngine(wiki_dir)
+        self.splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=150)
+        self.query_engine = QueryEngine(wiki_dir, embeddings_dir=embeddings_dir)
+
+    def _log_step_event(self, stage: str, step: str, status: str, **context):
+        payload = {
+            "stage": stage,
+            "step": step,
+            "status": status,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            **context,
+        }
+        logger.info(json.dumps(payload, default=str))
+
+    def _emit_progress(self, message: str, progress: int, stage: str, step: str, **context):
+        progress_manager.broadcast(
+            message,
+            progress,
+            "processing",
+            stage=stage,
+            step=step,
+            **context,
+        )
+
+    def _progress_percent(self, completed_steps: int, total_steps: int) -> int:
+        if total_steps <= 0:
+            return 0
+        return max(1, min(99, int((completed_steps / total_steps) * 100)))
 
     async def _call_llm(self, messages: list, task_type: str) -> str:
         logger.info(f"  🤖 Calling LLM for task: {task_type} (model: {self.model_id})")
@@ -227,44 +257,177 @@ class IngestEngine:
         Process a full corpus of documents (from folder, vault, or clippings).
         documents: List of dicts with 'filename', 'content', 'source_type'
         """
+        started_at = perf_counter()
         logger.info(f"🚀 Starting corpus ingestion for topic: '{topic}' with {len(documents)} docs.")
         for i, doc in enumerate(documents):
             logger.info(f"  📄 Doc {i+1}: {doc['filename']} ({len(doc['content'])} chars, type={doc.get('source_type', '?')})")
-        progress_manager.broadcast("Initializing corpus ingestion", 5)
+        self._log_step_event("ingest", "initialize", "start", topic=topic, total_documents=len(documents))
+        progress_manager.broadcast(
+            "Initializing corpus ingestion",
+            2,
+            "processing",
+            stage="initialize",
+            step="bootstrap",
+            total_documents=len(documents),
+            topic=topic,
+        )
 
         # 1. Normalize, Save, and Embed
         all_summaries = []
+        seen_hashes = set()
+        processed_documents = 0
+        document_stage_steps = 4
+        total_steps = max(len(documents), 1) * document_stage_steps + 3
+        completed_steps = 0
+
         for i, doc in enumerate(documents):
+            # Content-based deduplication
+            content_hash = hashlib.md5(doc['content'].encode()).hexdigest()
+            if content_hash in seen_hashes:
+                logger.info(f"  ⏭️ Skipping duplicate content: {doc['filename']}")
+                self._log_step_event(
+                    "document",
+                    "deduplicate",
+                    "skipped",
+                    topic=topic,
+                    document_name=doc["filename"],
+                    document_index=i + 1,
+                    total_documents=len(documents),
+                )
+                continue
+            seen_hashes.add(content_hash)
+            processed_documents += 1
             logger.info(f"\n{'='*60}")
             logger.info(f"📂 Processing document {i+1}/{len(documents)}: {doc['filename']}")
             logger.info(f"{'='*60}")
-            progress_manager.broadcast(f"Processing source {i+1}/{len(documents)}: {doc['filename']}", 10 + int((i/len(documents))*20))
-            
+
+            doc_context = {
+                "topic": topic,
+                "document_name": doc["filename"],
+                "document_index": i + 1,
+                "total_documents": len(documents),
+                "active_model": self.model_id,
+            }
+
             # Save raw
+            self._log_step_event("document", "load_document", "start", **doc_context)
+            self._emit_progress(
+                f"Loading document {i+1} of {len(documents)}: {doc['filename']}",
+                self._progress_percent(completed_steps, total_steps),
+                "document",
+                "load_document",
+                **doc_context,
+            )
+            step_started = perf_counter()
             raw_path = os.path.join(self.raw_dir, doc['filename'])
             with open(raw_path, "w") as f:
                 f.write(doc['content'])
             logger.info(f"  💾 Saved raw file to: {raw_path}")
-            
-            # Embed in Chroma
+            completed_steps += 1
+            self._log_step_event(
+                "document",
+                "load_document",
+                "success",
+                duration_ms=round((perf_counter() - step_started) * 1000, 2),
+                **doc_context,
+            )
+
+            # Chunk
+            self._log_step_event("document", "chunk_document", "start", **doc_context)
+            self._emit_progress(
+                f"Chunking document {i+1} of {len(documents)}",
+                self._progress_percent(completed_steps, total_steps),
+                "document",
+                "chunk_document",
+                **doc_context,
+            )
+            step_started = perf_counter()
             chunks = self.splitter.split_text(doc['content'])
             logger.info(f"  🧩 Split into {len(chunks)} chunks")
+            completed_steps += 1
+            self._log_step_event(
+                "document",
+                "chunk_document",
+                "success",
+                chunk_count=len(chunks),
+                duration_ms=round((perf_counter() - step_started) * 1000, 2),
+                **doc_context,
+            )
+
+            # Embed in Chroma
+            self._log_step_event("document", "generate_embeddings", "start", chunk_count=len(chunks), **doc_context)
+            self._emit_progress(
+                f"Generating embeddings for document {i+1} of {len(documents)}",
+                self._progress_percent(completed_steps, total_steps),
+                "document",
+                "generate_embeddings",
+                chunk_count=len(chunks),
+                **doc_context,
+            )
+            step_started = perf_counter()
             metadatas = [{"source": doc['filename'], "type": doc.get('source_type', 'upload')} for _ in chunks]
             self.query_engine.add_documents(chunks=chunks, metadatas=metadatas)
             logger.info(f"  📦 Embedded {len(chunks)} chunks into ChromaDB")
+            completed_steps += 1
+            self._log_step_event(
+                "document",
+                "generate_embeddings",
+                "success",
+                chunk_count=len(chunks),
+                duration_ms=round((perf_counter() - step_started) * 1000, 2),
+                **doc_context,
+            )
 
             # Summarize
+            self._log_step_event("document", "summarize_document", "start", **doc_context)
+            self._emit_progress(
+                f"Summarizing document {i+1} of {len(documents)}",
+                self._progress_percent(completed_steps, total_steps),
+                "document",
+                "summarize_document",
+                **doc_context,
+            )
+            step_started = perf_counter()
             summary = await self._generate_summary(doc['content'])
             all_summaries.append(f"--- Source: {doc['filename']} ---\n{summary}")
+            completed_steps += 1
+            self._log_step_event(
+                "document",
+                "summarize_document",
+                "success",
+                summary_chars=len(summary),
+                duration_ms=round((perf_counter() - step_started) * 1000, 2),
+                **doc_context,
+            )
 
         # 2. Extract Global Concepts
         logger.info(f"\n{'='*60}")
         logger.info(f"🔍 CONCEPT EXTRACTION PHASE")
         logger.info(f"{'='*60}")
-        progress_manager.broadcast("Extracting global concepts", 40)
+        self._log_step_event("concepts", "extract_concepts", "start", topic=topic, processed_documents=processed_documents)
+        self._emit_progress(
+            "Building concept clusters from processed documents",
+            self._progress_percent(completed_steps, total_steps),
+            "concepts",
+            "extract_concepts",
+            topic=topic,
+            processed_documents=processed_documents,
+            total_documents=len(documents),
+        )
+        step_started = perf_counter()
         combined_summaries = "\n\n".join(all_summaries)
         logger.info(f"📊 Combined summaries ({len(combined_summaries)} chars):\n{combined_summaries[:500]}")
         concepts = await self._extract_global_concepts(topic, combined_summaries)
+        completed_steps += 1
+        self._log_step_event(
+            "concepts",
+            "extract_concepts",
+            "success",
+            concept_count=len(concepts),
+            duration_ms=round((perf_counter() - step_started) * 1000, 2),
+            topic=topic,
+            processed_documents=processed_documents,
+        )
 
         if not concepts:
             logger.warning("⚠️ No concepts extracted even after retry. Falling back to generic topic concept.")
@@ -273,12 +436,26 @@ class IngestEngine:
         # 3. Write Concept Articles using RAG
         created_pages = []
         updated_pages = []
+        total_steps += len(concepts)
         
         for i, concept in enumerate(concepts):
-            pct = 50 + int((i/max(len(concepts), 1)) * 40)
             logger.info(f"📝 Writing article for concept: {concept['name']}")
-            progress_manager.broadcast(f"Writing article: {concept['name']}", pct)
-            
+            concept_context = {
+                "topic": topic,
+                "concept_name": concept["name"],
+                "concept_index": i + 1,
+                "total_concepts": len(concepts),
+                "active_model": self.model_id,
+            }
+            self._log_step_event("wiki", "write_page", "start", **concept_context)
+            self._emit_progress(
+                f"Writing wiki page {i+1} of {len(concepts)}: {concept['name']}",
+                self._progress_percent(completed_steps, total_steps),
+                "wiki",
+                "write_page",
+                **concept_context,
+            )
+            step_started = perf_counter()
             page_content = await self._synthesize_concept_article(concept)
             if page_content:
                 page_name = f"{concept['name']}.md"
@@ -286,23 +463,51 @@ class IngestEngine:
                 self._write_wiki_page(page_name, page_content)
 
                 # Embed the new wiki page back into Chroma so it can be queried
+                page_chunks = self.splitter.split_text(page_content) or [page_content]
                 self.query_engine.add_documents(
-                    chunks=[page_content],
-                    metadatas=[{"source": page_name, "type": "wiki_page"}]
+                    chunks=page_chunks,
+                    metadatas=[{"source": page_name, "type": "wiki_page"} for _ in page_chunks]
                 )
 
                 if existing:
                     updated_pages.append(concept['name'])
                 else:
                     created_pages.append(concept['name'])
+            completed_steps += 1
+            self._log_step_event(
+                "wiki",
+                "write_page",
+                "success",
+                page_written=bool(page_content),
+                duration_ms=round((perf_counter() - step_started) * 1000, 2),
+                **concept_context,
+            )
             
             if (i+1) % 5 == 0:
                 self._update_index(created_pages + updated_pages)
 
         # 4. Finalize
-        progress_manager.broadcast("Updating index and log", 95)
+        self._log_step_event("finalize", "update_index_and_log", "start", topic=topic)
+        self._emit_progress(
+            "Writing index, log, and final wiki metadata",
+            self._progress_percent(completed_steps, total_steps),
+            "finalize",
+            "update_index_and_log",
+            topic=topic,
+            created_pages=len(created_pages),
+            updated_pages=len(updated_pages),
+        )
+        step_started = perf_counter()
         self._update_index(created_pages + updated_pages)
         self._update_log(f"Corpus: {topic}", created_pages, updated_pages)
+        completed_steps += 1
+        self._log_step_event(
+            "finalize",
+            "update_index_and_log",
+            "success",
+            duration_ms=round((perf_counter() - step_started) * 1000, 2),
+            topic=topic,
+        )
 
         if self.git_manager.commit_changes(f"Ingest Corpus: {topic} — {len(created_pages)} created, {len(updated_pages)} updated"):
             logger.info("  ✅ Changes committed")
@@ -310,12 +515,27 @@ class IngestEngine:
         summary_result = {
             "status": "success",
             "topic": topic,
-            "documents_processed": len(documents),
+            "documents_processed": processed_documents,
             "pages_created": created_pages,
             "pages_updated": updated_pages,
+            "duration_ms": round((perf_counter() - started_at) * 1000, 2),
         }
-        
-        progress_manager.broadcast(f"Complete! {len(created_pages)} created.", 100, "success")
+
+        self._log_step_event("ingest", "complete", "success", **summary_result)
+        progress_manager.broadcast(
+            f"Complete! {len(created_pages)} pages created or refreshed.",
+            100,
+            "success",
+            stage="complete",
+            step="done",
+            topic=topic,
+            documents_processed=processed_documents,
+            total_documents=len(documents),
+            pages_created=len(created_pages),
+            pages_updated=len(updated_pages),
+            duration_ms=summary_result["duration_ms"],
+            active_model=self.model_id,
+        )
         return summary_result
 
     def remove_wiki_page(self, filename: str) -> bool:

@@ -1,6 +1,7 @@
 import asyncio
 import json
 from typing import AsyncGenerator
+from datetime import datetime, timezone
 
 class ProgressManager:
     def __init__(self):
@@ -21,8 +22,16 @@ class ProgressManager:
         finally:
             self.queues.remove(queue)
 
-    def broadcast(self, message: str, progress: int = 0, status: str = "processing"):
-        payload = json.dumps({"message": message, "progress": progress, "status": status})
+    def broadcast(self, message: str, progress: int = 0, status: str = "processing", **context):
+        payload = json.dumps(
+            {
+                "message": message,
+                "progress": progress,
+                "status": status,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                **context,
+            }
+        )
         self.last_payload = payload
         
         for queue in self.queues:

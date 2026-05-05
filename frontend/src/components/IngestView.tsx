@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Upload, Cpu, FileText, Activity, Folder, Database, Bookmark, BookOpen, Library } from 'lucide-react';
+import { Upload, FileText, BookOpen, Library } from 'lucide-react';
 import axios from 'axios';
 
 const API_BASE = "http://localhost:8000";
@@ -9,30 +9,50 @@ interface Model {
   display_name: string;
 }
 
+interface IngestProgress {
+  message: string;
+  progress: number;
+  status: string;
+  stage?: string;
+  step?: string;
+  document_name?: string;
+  document_index?: number;
+  total_documents?: number;
+  concept_name?: string;
+  concept_index?: number;
+  total_concepts?: number;
+  duration_ms?: number;
+  active_model?: string | null;
+}
+
 interface IngestViewProps {
   masterModel: string;
   models: Model[];
+  selectedWikiId: string;
+  selectedWikiName: string;
   onSuccess: () => void;
   isIngesting: boolean;
+  progress: IngestProgress | null;
 }
 
-type IngestMode = 'folder' | 'vault' | 'clippings';
-
-const IngestView: React.FC<IngestViewProps> = ({ masterModel, models, onSuccess, isIngesting }) => {
+const IngestView: React.FC<IngestViewProps> = ({ masterModel, models, selectedWikiId, selectedWikiName, onSuccess, isIngesting, progress }) => {
   const [topic, setTopic] = useState('');
-  const [mode, setMode] = useState<IngestMode>('folder');
-
+  
   // State for files
-  const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
-
-  // State for Vault path
-  const [vaultPath, setVaultPath] = useState('');
-
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  
   const [overrideModel, setOverrideModel] = useState<string>('');
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      setSelectedFiles(e.target.files);
+      const validExtensions = ['.md', '.txt', '.html'];
+      const filtered = Array.from(e.target.files).filter(file => {
+        const path = file.webkitRelativePath || file.name;
+        if (path.includes('/.')) return false; // Skip hidden folders
+        if (file.name.startsWith('.')) return false; // Skip hidden files
+        return validExtensions.some(ext => file.name.toLowerCase().endsWith(ext));
+      });
+      setSelectedFiles(filtered);
     }
   };
 
@@ -45,26 +65,17 @@ const IngestView: React.FC<IngestViewProps> = ({ masterModel, models, onSuccess,
     const modelToUse = overrideModel || masterModel;
 
     try {
-      if (mode === 'vault') {
-        if (!vaultPath.trim()) return;
-        await axios.post(`${API_BASE}/ingest/vault`, {
-          path: vaultPath.trim(),
-          topic: topic.trim(),
-          model: modelToUse
-        });
-      } else {
-        if (!selectedFiles || selectedFiles.length === 0) return;
-        const formData = new FormData();
-        Array.from(selectedFiles).forEach(file => {
-          formData.append('files', file);
-        });
+      if (!selectedFiles || selectedFiles.length === 0) return;
+      const formData = new FormData();
+      
+      selectedFiles.forEach(file => {
+        formData.append('files', file);
+      });
 
-        await axios.post(`${API_BASE}/ingest?topic=${encodeURIComponent(topic.trim())}&model=${modelToUse}`, formData);
-      }
+      await axios.post(`${API_BASE}/ingest?topic=${encodeURIComponent(topic.trim())}&model=${modelToUse}&wiki_id=${encodeURIComponent(selectedWikiId)}`, formData);
 
       onSuccess();
-      setSelectedFiles(null);
-      setVaultPath('');
+      setSelectedFiles([]);
       setTopic('');
       setOverrideModel('');
     } catch (error) {
@@ -74,18 +85,71 @@ const IngestView: React.FC<IngestViewProps> = ({ masterModel, models, onSuccess,
   };
 
   const masterModelName = models.find(m => m.model_id === masterModel)?.display_name || masterModel;
+  const modelInUse = progress?.active_model || overrideModel || masterModel;
 
-  const canSubmit = topic.trim() && (mode === 'vault' ? vaultPath.trim() : (selectedFiles && selectedFiles.length > 0));
+  const canSubmit = topic.trim() && selectedFiles && selectedFiles.length > 0;
 
   return (
     <div className="flex flex-col h-full max-w-2xl mx-auto p-10 animate-in fade-in duration-500">
       <div className="space-y-8">
         <div className="space-y-2">
           <h2 className="text-4xl font-black tracking-tight text-white">Knowledge Ingestion</h2>
-          <p className="text-white/40">Build your wiki by clustering documents around a core topic.</p>
+          <p className="text-white/40">Build <span className="text-white font-semibold">{selectedWikiName}</span> by clustering documents around a core topic.</p>
         </div>
 
         <div className="bg-white/5 border border-white/10 rounded-2xl p-6 space-y-6">
+          {(isIngesting || progress) && (
+            <div className="space-y-4 rounded-2xl border border-primary/20 bg-primary/5 p-5">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-[0.2em] text-primary/70">Live Pipeline</p>
+                  <p className="mt-2 text-sm font-semibold text-white">{progress?.message || 'Preparing ingestion pipeline...'}</p>
+                  <p className="mt-1 text-xs text-white/45">
+                    {progress?.stage ? `${progress.stage} / ${progress.step || 'working'}` : 'Waiting for the next step...'}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="text-2xl font-black text-primary">{progress?.progress ?? 0}%</p>
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-white/35">{modelInUse}</p>
+                </div>
+              </div>
+
+              <div className="h-2 overflow-hidden rounded-full bg-white/10">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-primary to-blue-400 transition-all duration-500"
+                  style={{ width: `${progress?.progress ?? 0}%` }}
+                />
+              </div>
+
+              <div className="grid gap-3 text-xs text-white/60 md:grid-cols-3">
+                <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-3">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/35">Document</p>
+                  <p className="mt-2 text-sm text-white/85">
+                    {progress?.document_index && progress?.total_documents
+                      ? `${progress.document_index} of ${progress.total_documents}`
+                      : 'Waiting'}
+                  </p>
+                  <p className="mt-1 truncate">{progress?.document_name || 'No document active'}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-3">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/35">Concepts</p>
+                  <p className="mt-2 text-sm text-white/85">
+                    {progress?.concept_index && progress?.total_concepts
+                      ? `${progress.concept_index} of ${progress.total_concepts}`
+                      : 'Not started'}
+                  </p>
+                  <p className="mt-1 truncate">{progress?.concept_name || 'No concept active'}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-3">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/35">Duration</p>
+                  <p className="mt-2 text-sm text-white/85">
+                    {progress?.duration_ms ? `${(progress.duration_ms / 1000).toFixed(1)}s` : 'In progress'}
+                  </p>
+                  <p className="mt-1">{progress?.status === 'success' ? 'Latest completed step' : 'Current active step'}</p>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Topic Input */}
           <div className="space-y-3">
@@ -100,98 +164,45 @@ const IngestView: React.FC<IngestViewProps> = ({ masterModel, models, onSuccess,
             />
           </div>
 
-          {/* Mode Selection */}
+          {/* Source Input */}
           <div className="space-y-3 pt-4 border-t border-white/10">
-            <label className="text-sm font-semibold text-white/80 block">2. Source Mode</label>
-            <div className="grid grid-cols-3 gap-3">
-              <button
-                onClick={() => setMode('folder')}
-                className={`flex flex-col items-center justify-center p-4 rounded-xl border ${mode === 'folder' ? 'bg-primary/10 border-primary/30 text-primary' : 'bg-white/5 border-white/5 text-white/40 hover:bg-white/10'} transition-all`}
-              >
-                <Folder className="w-6 h-6 mb-2" />
-                <span className="text-xs font-semibold">Folder Upload</span>
-              </button>
-              <button
-                onClick={() => setMode('vault')}
-                className={`flex flex-col items-center justify-center p-4 rounded-xl border ${mode === 'vault' ? 'bg-primary/10 border-primary/30 text-primary' : 'bg-white/5 border-white/5 text-white/40 hover:bg-white/10'} transition-all`}
-              >
-                <Database className="w-6 h-6 mb-2" />
-                <span className="text-xs font-semibold">Local Vault</span>
-              </button>
-              <button
-                onClick={() => setMode('clippings')}
-                className={`flex flex-col items-center justify-center p-4 rounded-xl border ${mode === 'clippings' ? 'bg-primary/10 border-primary/30 text-primary' : 'bg-white/5 border-white/5 text-white/40 hover:bg-white/10'} transition-all`}
-              >
-                <Bookmark className="w-6 h-6 mb-2" />
-                <span className="text-xs font-semibold">Web Clippings</span>
-              </button>
+            <label className="text-sm font-semibold text-white/80 block">2. Select Source Documents</label>
+
+            <div className={`border-2 border-dashed ${selectedFiles && selectedFiles.length > 0 ? 'border-primary/50 bg-primary/5' : 'border-white/20 bg-white/5'} rounded-xl p-8 text-center hover:bg-white/10 transition-colors cursor-pointer relative`}>
+              <input
+                type="file"
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                onChange={handleFileChange}
+                disabled={isIngesting}
+                multiple
+                // @ts-ignore
+                webkitdirectory=""
+                directory=""
+              />
+
+              <div className="flex flex-col items-center space-y-3 pointer-events-none">
+                {selectedFiles && selectedFiles.length > 0 ? (
+                  <>
+                    <div className="p-3 bg-primary/20 rounded-full text-primary">
+                      <FileText className="w-8 h-8" />
+                    </div>
+                    <span className="text-white font-medium">{selectedFiles.length} valid documents selected</span>
+                  </>
+                ) : (
+                  <>
+                    <div className="p-3 bg-white/10 rounded-full text-white/40">
+                      <Upload className="w-8 h-8" />
+                    </div>
+                    <span className="text-white/60 font-medium">Click to select folder or files</span>
+                    <span className="text-xs text-white/30">Select your vault or corpus directory</span>
+                  </>
+                )}
+              </div>
             </div>
           </div>
 
-          {/* Source Input */}
           <div className="space-y-3 pt-4 border-t border-white/10">
-            <label className="text-sm font-semibold text-white/80 block">3. Select Source</label>
-
-            {mode === 'vault' ? (
-              <div className="space-y-2">
-                <input
-                  type="text"
-                  placeholder="/Users/username/Documents/ObsidianVault"
-                  value={vaultPath}
-                  onChange={(e) => setVaultPath(e.target.value)}
-                  disabled={isIngesting}
-                  className="w-full bg-[#0a0c12] border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-primary/50 transition-colors"
-                />
-                <p className="text-[10px] text-amber-400/70">Enter the absolute local path to your vault. The system will recursively scan for .md and .txt files.</p>
-              </div>
-            ) : (
-              <div className={`border-2 border-dashed ${selectedFiles && selectedFiles.length > 0 ? 'border-primary/50 bg-primary/5' : 'border-white/20 bg-white/5'} rounded-xl p-8 text-center hover:bg-white/10 transition-colors cursor-pointer relative`}>
-                {mode === 'folder' ? (
-                  <input
-                    type="file"
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                    onChange={handleFileChange}
-                    disabled={isIngesting}
-                    // @ts-ignore
-                    webkitdirectory=""
-                    directory=""
-                    multiple
-                  />
-                ) : (
-                  <input
-                    type="file"
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                    onChange={handleFileChange}
-                    disabled={isIngesting}
-                    multiple
-                    accept=".md,.txt,.html"
-                  />
-                )}
-
-                <div className="flex flex-col items-center space-y-3 pointer-events-none">
-                  {selectedFiles && selectedFiles.length > 0 ? (
-                    <>
-                      <div className="p-3 bg-primary/20 rounded-full text-primary">
-                        <FileText className="w-8 h-8" />
-                      </div>
-                      <span className="text-white font-medium">{selectedFiles.length} files selected</span>
-                    </>
-                  ) : (
-                    <>
-                      <div className="p-3 bg-white/10 rounded-full text-white/40">
-                        <Upload className="w-8 h-8" />
-                      </div>
-                      <span className="text-white/60 font-medium">Click or drag {mode === 'folder' ? 'folder' : 'files'} to upload</span>
-                      <span className="text-xs text-white/30">Markdown (.md), Text (.txt), or HTML</span>
-                    </>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="space-y-3 pt-4 border-t border-white/10">
-            <label className="text-sm font-semibold text-white/80 block">4. Ingestion Model</label>
+            <label className="text-sm font-semibold text-white/80 block">3. Ingestion Model</label>
             <p className="text-xs text-white/40 mb-2">Select which LLM will parse and structure this corpus.</p>
             <select
               className="w-full bg-[#0a0c12] border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-primary/50 transition-colors"
@@ -200,7 +211,7 @@ const IngestView: React.FC<IngestViewProps> = ({ masterModel, models, onSuccess,
               disabled={isIngesting}
             >
               <option value="">Use Master Model ({masterModelName})</option>
-              {models.filter(m => m.model_id !== 'gemma4:e4b').map(m => (
+              {models.map(m => (
                 <option key={m.model_id} value={m.model_id}>{m.display_name}</option>
               ))}
             </select>

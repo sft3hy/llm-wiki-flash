@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Wind, X, RefreshCw, Link2, FileX, Search, Brain, Terminal, ShieldCheck, Zap } from 'lucide-react';
+import { RefreshCw, Link2, FileX, Search, Brain, Terminal, ShieldCheck, Zap } from 'lucide-react';
 import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -7,7 +7,8 @@ import remarkGfm from 'remark-gfm';
 const API_BASE = "http://localhost:8000";
 
 interface MeditationViewProps {
-  pages: string[];
+  selectedWikiId: string;
+  selectedWikiName: string;
   selectedModel: string;
 }
 
@@ -23,23 +24,24 @@ interface LintResults {
   suggestions: string[];
 }
 
-const MeditationView: React.FC<MeditationViewProps> = ({ pages, selectedModel }) => {
-  const [loading, setLoading] = useState(false);
+const MeditationView: React.FC<MeditationViewProps> = ({ selectedWikiId, selectedWikiName, selectedModel }) => {
   const [lintResults, setLintResults] = useState<LintResults | null>(null);
   const [lintLoading, setLintLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<'curate' | 'lint'>('curate');
   const [maintenanceLog, setMaintenanceLog] = useState<string>('');
   const [maintenanceLoading, setMaintenanceLoading] = useState(false);
+  const [rebuildLoading, setRebuildLoading] = useState(false);
+  const [integrityResult, setIntegrityResult] = useState<any | null>(null);
 
   useEffect(() => {
     if (activeTab === 'curate') {
       fetchLog();
     }
-  }, [activeTab]);
+  }, [activeTab, selectedWikiId]);
 
   const fetchLog = async () => {
     try {
-      const response = await axios.get(`${API_BASE}/log`);
+      const response = await axios.get(`${API_BASE}/log?wiki_id=${encodeURIComponent(selectedWikiId)}`);
       setMaintenanceLog(response.data.content);
     } catch (error) {
       console.error("Log error:", error);
@@ -49,7 +51,7 @@ const MeditationView: React.FC<MeditationViewProps> = ({ pages, selectedModel })
   const runMaintenance = async () => {
     setMaintenanceLoading(true);
     try {
-      await axios.post(`${API_BASE}/meditate?model=${selectedModel}`);
+      await axios.post(`${API_BASE}/meditate?model=${selectedModel}&wiki_id=${encodeURIComponent(selectedWikiId)}`);
       await fetchLog();
     } catch (error) {
       console.error("Maintenance error:", error);
@@ -62,12 +64,51 @@ const MeditationView: React.FC<MeditationViewProps> = ({ pages, selectedModel })
   const runLint = async () => {
     setLintLoading(true);
     try {
-      const response = await axios.post(`${API_BASE}/lint?model=${selectedModel}`);
+      const response = await axios.post(`${API_BASE}/lint?model=${selectedModel}&wiki_id=${encodeURIComponent(selectedWikiId)}`);
       setLintResults(response.data);
     } catch (error) {
       console.error("Lint error:", error);
     } finally {
       setLintLoading(false);
+    }
+  };
+
+  const rebuildEmbeddings = async () => {
+    setRebuildLoading(true);
+    try {
+      await axios.post(`${API_BASE}/wikis/${selectedWikiId}/rebuild-embeddings`);
+      const integrity = await axios.get(`${API_BASE}/wikis/${selectedWikiId}/validate`);
+      setIntegrityResult(integrity.data);
+    } catch (error) {
+      console.error("Rebuild error:", error);
+      alert("Failed to rebuild embeddings.");
+    } finally {
+      setRebuildLoading(false);
+    }
+  };
+
+  const reindexDocuments = async () => {
+    setMaintenanceLoading(true);
+    try {
+      await axios.post(`${API_BASE}/wikis/${selectedWikiId}/reindex?model=${encodeURIComponent(selectedModel)}`);
+      await fetchLog();
+      const integrity = await axios.get(`${API_BASE}/wikis/${selectedWikiId}/validate`);
+      setIntegrityResult(integrity.data);
+    } catch (error) {
+      console.error("Reindex error:", error);
+      alert("Failed to re-index wiki documents.");
+    } finally {
+      setMaintenanceLoading(false);
+    }
+  };
+
+  const validateIntegrity = async () => {
+    try {
+      const response = await axios.get(`${API_BASE}/wikis/${selectedWikiId}/validate`);
+      setIntegrityResult(response.data);
+    } catch (error) {
+      console.error("Integrity error:", error);
+      alert("Failed to validate wiki integrity.");
     }
   };
 
@@ -93,18 +134,40 @@ const MeditationView: React.FC<MeditationViewProps> = ({ pages, selectedModel })
           <div className="flex items-center justify-between">
             <div className="space-y-2">
               <h2 className="text-3xl font-bold tracking-tight">Agentic Maintenance</h2>
-              <p className="text-white/40 max-w-lg">The "meditation" loop: an agentic process of reading, extracting, and synthesizing raw data into durable knowledge.</p>
+              <p className="text-white/40 max-w-lg">Maintain <span className="text-white font-semibold">{selectedWikiName}</span> with re-indexing, integrity checks, and synthesis passes.</p>
             </div>
-            <button
-              onClick={runMaintenance}
-              disabled={maintenanceLoading}
-              className="group relative px-8 py-4 bg-primary text-black rounded-2xl font-bold overflow-hidden transition-all hover:scale-105 active:scale-95 disabled:opacity-50 shadow-xl shadow-primary/20"
-            >
-              <div className="flex items-center space-x-3 relative z-10">
-                {maintenanceLoading ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Zap className="w-5 h-5" />}
-                <span>{maintenanceLoading ? "Maintaining..." : "Run Maintenance"}</span>
-              </div>
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={runMaintenance}
+                disabled={maintenanceLoading}
+                className="group relative px-8 py-4 bg-primary text-black rounded-2xl font-bold overflow-hidden transition-all hover:scale-105 active:scale-95 disabled:opacity-50 shadow-xl shadow-primary/20"
+              >
+                <div className="flex items-center space-x-3 relative z-10">
+                  {maintenanceLoading ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Zap className="w-5 h-5" />}
+                  <span>{maintenanceLoading ? "Maintaining..." : "Run Maintenance"}</span>
+                </div>
+              </button>
+              <button
+                onClick={rebuildEmbeddings}
+                disabled={rebuildLoading}
+                className="px-6 py-4 bg-white/5 border border-white/10 text-white rounded-2xl font-bold transition-all hover:bg-white/10 disabled:opacity-50"
+              >
+                {rebuildLoading ? 'Rebuilding...' : 'Rebuild Embeddings'}
+              </button>
+              <button
+                onClick={reindexDocuments}
+                disabled={maintenanceLoading}
+                className="px-6 py-4 bg-white/5 border border-white/10 text-white rounded-2xl font-bold transition-all hover:bg-white/10 disabled:opacity-50"
+              >
+                {maintenanceLoading ? 'Re-indexing...' : 'Re-index Documents'}
+              </button>
+              <button
+                onClick={validateIntegrity}
+                className="px-6 py-4 bg-white/5 border border-white/10 text-white rounded-2xl font-bold transition-all hover:bg-white/10"
+              >
+                Validate Integrity
+              </button>
+            </div>
           </div>
 
           <div className="grid grid-cols-3 gap-6">
@@ -150,6 +213,13 @@ const MeditationView: React.FC<MeditationViewProps> = ({ pages, selectedModel })
               )}
             </div>
           </div>
+
+          {integrityResult && (
+            <div className="glass p-5 rounded-2xl space-y-3">
+              <h4 className="text-sm font-bold text-white">Integrity Snapshot</h4>
+              <p className="text-xs text-white/50">Missing: {integrityResult.missing?.length || 0} • Broken Links: {integrityResult.broken_links?.length || 0} • Embeddings Present: {integrityResult.embeddings_present ? 'Yes' : 'No'}</p>
+            </div>
+          )}
         </div>
       ) : (
         /* Librarian / Lint Tab */
