@@ -163,10 +163,30 @@ class WikiRegistry:
         if not paths.wiki_dir.exists():
             return pages
         for file_path in sorted(paths.wiki_dir.glob("*.md")):
+            content = file_path.read_text(encoding="utf-8")
+            
+            links = set()
+            for match in re.findall(r"\[\[(.*?)\]\]", content):
+                link_target = match.split("|", 1)[0].strip()
+                if not link_target.startswith("sources/"):
+                    target_name = f"{link_target}.md" if not link_target.endswith(".md") else link_target
+                    links.add(target_name)
+                    
+            for match in re.findall(r"\[.*?\]\((.*?)\)", content):
+                link_target = match.strip()
+                if link_target.startswith("wiki://"):
+                    target_name = link_target.replace("wiki://", "")
+                    target_name = f"{target_name}.md" if not target_name.endswith(".md") else target_name
+                    links.add(target_name)
+                elif not link_target.startswith("http") and not link_target.startswith("source://") and not link_target.startswith("#") and not link_target.startswith("mailto:") and not link_target.startswith("tel:"):
+                    target_name = f"{link_target}.md" if not link_target.endswith(".md") else link_target
+                    links.add(target_name)
+
             pages.append(
                 {
                     "name": file_path.name,
-                    "title": self._extract_markdown_title(file_path.read_text(encoding="utf-8"), file_path.stem.replace("-", " ").title()),
+                    "title": self._extract_markdown_title(content, file_path.stem.replace("-", " ").title()),
+                    "links": list(links)
                 }
             )
         return pages

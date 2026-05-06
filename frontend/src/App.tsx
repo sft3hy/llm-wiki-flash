@@ -64,6 +64,7 @@ interface WikiSummary {
 interface WikiPageSummary {
   name: string;
   title: string;
+  links?: string[];
 }
 
 interface SourceSummary {
@@ -269,7 +270,7 @@ function App() {
       (source) =>
         source.name.toLowerCase().includes(query) ||
         source.title.toLowerCase().includes(query) ||
-      (source.snippet || '').toLowerCase().includes(query),
+        (source.snippet || '').toLowerCase().includes(query),
     );
   }, [sourceNotes, searchQuery]);
   const governancePages = useMemo(
@@ -669,7 +670,8 @@ function App() {
       return;
     }
     if (href.startsWith('wiki://')) {
-      void fetchPageContent(`${href.replace('wiki://', '')}.md`);
+      const rawName = href.replace('wiki://', '');
+      void fetchPageContent(rawName.endsWith('.md') ? rawName : `${rawName}.md`);
       return;
     }
     if (href.startsWith('source://')) {
@@ -677,34 +679,38 @@ function App() {
       void fetchSourceContent(rawName.endsWith('.md') ? rawName : `${rawName}.md`);
       return;
     }
+
+    if (!href.startsWith('http://') && !href.startsWith('https://') && !href.startsWith('#') && !href.startsWith('mailto:') && !href.startsWith('tel:')) {
+      void fetchPageContent(href.endsWith('.md') ? href : `${href}.md`);
+      return;
+    }
+
     window.open(href, '_blank', 'noopener,noreferrer');
   };
 
   return (
     <div className="flex h-screen overflow-hidden bg-[#05070a] font-sans text-[#e2e8f0]">
       <aside
-        className={`z-20 flex h-full min-h-0 flex-col overflow-hidden border-r border-white/5 bg-[#0a0c12]/90 shadow-2xl backdrop-blur-xl transition-all duration-300 ${
-          isSidebarCollapsed ? 'w-[4.75rem] p-3' : 'w-[18.5rem] p-4 lg:w-[20rem] xl:w-[22rem] xl:p-5'
-        }`}
+        className={`z-20 flex h-full min-h-0 flex-col overflow-hidden border-r border-white/5 bg-[#0a0c12]/90 shadow-2xl backdrop-blur-xl transition-all duration-300 ${isSidebarCollapsed ? 'w-[4.75rem] p-3' : 'w-[18.5rem] p-4 lg:w-[20rem] xl:w-[22rem] xl:p-5'
+          }`}
       >
         <div className={`mb-4 flex flex-none items-start ${isSidebarCollapsed ? 'justify-center' : 'justify-between gap-3'}`}>
-          <div className={`flex items-center ${isSidebarCollapsed ? '' : 'space-x-3'}`}>
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-blue-600">
-              <Brain className="h-5 w-5 text-black" />
-            </div>
-            {!isSidebarCollapsed && (
+          {!isSidebarCollapsed && (
+            <div className="flex items-center space-x-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-blue-600">
+                <Brain className="h-5 w-5 text-black" />
+              </div>
               <div>
-                <h1 className="text-lg font-bold text-white">Wiki Agent</h1>
+                <h1 className="text-lg font-bold text-white">LLM Wiki</h1>
                 <p className="text-xs text-white/40">Persistent local knowledge bases</p>
               </div>
-            )}
-          </div>
+            </div>
+          )}
           <button
             type="button"
             onClick={() => setIsSidebarCollapsed((value) => !value)}
-            className={`inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/60 transition hover:bg-white/10 hover:text-white ${
-              isSidebarCollapsed ? 'absolute right-3 top-3' : ''
-            }`}
+            className={`inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/60 transition hover:bg-white/10 hover:text-white ${isSidebarCollapsed ? 'absolute right-3 top-3' : ''
+              }`}
             aria-label={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
             {isSidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
@@ -713,13 +719,12 @@ function App() {
 
         {!isSidebarCollapsed && (
           <>
-            <section className="mb-4 flex min-h-0 flex-1 basis-1/2 flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/[0.03] p-2">
+            <section className="mb-4 flex flex-none flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/[0.03] p-2">
               <div className="px-3 pb-2 pt-2">
                 <p className="text-xs font-bold uppercase tracking-[0.18em] text-white/35">Workspace</p>
               </div>
               <div className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 pb-2 custom-scrollbar">
                 {[
-                  { key: 'wiki', label: 'Wiki', description: 'Read pages in the selected knowledge base.', icon: BookOpen },
                   { key: 'chat', label: 'Knowledge Chat', description: 'Ask questions scoped to this wiki only.', icon: MessageSquare },
                   { key: 'builder', label: 'Wiki Builder', description: 'Research and generate this wiki locally.', icon: Search },
                   { key: 'maintenance', label: 'Maintenance', description: 'Repair, re-index, and validate this wiki.', icon: Brain },
@@ -728,9 +733,8 @@ function App() {
                   <button
                     key={item.key}
                     onClick={() => setActiveView(item.key as ViewType)}
-                    className={`w-full rounded-2xl px-4 py-3 text-left transition ${
-                      activeView === item.key ? 'bg-white/10 text-white' : 'text-white/60 hover:bg-white/5 hover:text-white'
-                    }`}
+                    className={`w-full rounded-2xl px-4 py-3 text-left transition ${activeView === item.key ? 'bg-white/10 text-white' : 'text-white/60 hover:bg-white/5 hover:text-white'
+                      }`}
                   >
                     <div className="flex items-center gap-3">
                       <item.icon className="h-4 w-4" />
@@ -744,7 +748,7 @@ function App() {
               </div>
             </section>
 
-            <section className="min-h-0 flex flex-1 basis-1/2 flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+            <section className="min-h-0 flex flex-1 flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/[0.03] p-4">
               <div className="mb-3 flex items-center justify-between">
                 <div>
                   <p className="text-xs font-bold uppercase tracking-[0.18em] text-white/35">{currentWiki?.name || 'Wiki'} Library</p>
@@ -769,11 +773,10 @@ function App() {
                         <button
                           key={page.name}
                           onClick={() => void fetchPageContent(page.name)}
-                          className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition ${
-                            selectedEntryKind === 'wiki' && selectedPage === page.name && activeView === 'wiki'
+                          className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition ${selectedEntryKind === 'wiki' && selectedPage === page.name && activeView === 'wiki'
                               ? 'bg-white/10 text-white'
                               : 'text-white/45 hover:bg-white/5 hover:text-white'
-                          }`}
+                            }`}
                         >
                           <FileText className="h-3.5 w-3.5 opacity-50" />
                           <span className="truncate text-xs font-medium">{page.title}</span>
@@ -801,11 +804,10 @@ function App() {
                         <button
                           key={source.name}
                           onClick={() => void fetchSourceContent(source.name)}
-                          className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition ${
-                            selectedEntryKind === 'source' && selectedPage === source.name && activeView === 'wiki'
+                          className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition ${selectedEntryKind === 'source' && selectedPage === source.name && activeView === 'wiki'
                               ? 'bg-white/10 text-white'
                               : 'text-white/45 hover:bg-white/5 hover:text-white'
-                          }`}
+                            }`}
                         >
                           <FileText className="h-3.5 w-3.5 opacity-50" />
                           <span className="truncate text-xs font-medium">{source.title}</span>
@@ -833,11 +835,10 @@ function App() {
                         <button
                           key={page.name}
                           onClick={() => void fetchPageContent(page.name)}
-                          className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition ${
-                            selectedEntryKind === 'wiki' && selectedPage === page.name && activeView === 'wiki'
+                          className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition ${selectedEntryKind === 'wiki' && selectedPage === page.name && activeView === 'wiki'
                               ? 'bg-white/10 text-white'
                               : 'text-white/45 hover:bg-white/5 hover:text-white'
-                          }`}
+                            }`}
                         >
                           <FileText className="h-3.5 w-3.5 opacity-50" />
                           <span className="truncate text-xs font-medium">{page.title}</span>
@@ -888,7 +889,6 @@ function App() {
                   <div className="pointer-events-none absolute left-0 top-full z-30 mt-2 hidden w-80 rounded-2xl border border-white/10 bg-[#0a0c12]/95 p-4 text-left shadow-2xl group-hover:block">
                     <p className="text-xs font-bold uppercase tracking-[0.18em] text-white/35">About This View</p>
                     <p className="mt-2 text-sm leading-6 text-white/70">{viewInfo.description}</p>
-                    <p className="mt-3 text-sm leading-6 text-white/55">Each wiki is a fully isolated local knowledge base with its own pages, sources, and embeddings.</p>
                   </div>
                 </div>
               </div>
@@ -921,22 +921,20 @@ function App() {
                 </div>
                 <button
                   onClick={() => setActiveView('upload')}
-                  className={`inline-flex shrink-0 items-center gap-1.5 rounded-xl border px-2.5 py-2 text-xs font-semibold transition ${
-                    activeView === 'upload'
+                  className={`inline-flex shrink-0 items-center gap-1.5 rounded-xl border px-2.5 py-2 text-xs font-semibold transition ${activeView === 'upload'
                       ? 'border-primary/40 bg-primary/12 text-white'
                       : 'border-white/10 bg-white/5 text-white/75 hover:bg-white/10 hover:text-white'
-                  }`}
+                    }`}
                 >
                   <Upload className="h-4 w-4" />
                   <span>Upload</span>
                 </button>
                 <button
                   onClick={() => setActiveView('settings')}
-                  className={`inline-flex shrink-0 items-center gap-1.5 rounded-xl border px-2.5 py-2 text-xs font-semibold transition ${
-                    activeView === 'settings'
+                  className={`inline-flex shrink-0 items-center gap-1.5 rounded-xl border px-2.5 py-2 text-xs font-semibold transition ${activeView === 'settings'
                       ? 'border-primary/40 bg-primary/12 text-white'
                       : 'border-white/10 bg-white/5 text-white/75 hover:bg-white/10 hover:text-white'
-                  }`}
+                    }`}
                 >
                   <Settings className="h-4 w-4" />
                   <span>Settings</span>
@@ -945,7 +943,7 @@ function App() {
             </div>
           </div>
 
-          {activeView === 'wiki' && (
+          {/* {activeView === 'wiki' && (
             <div className="border-t border-white/5 px-4 py-4 lg:px-8">
               <div className="flex items-center gap-3 rounded-[1.6rem] border border-white/10 bg-white/[0.03] px-4 py-3 shadow-[0_18px_50px_rgba(0,0,0,0.24)]">
                 <Search className="h-4 w-4 text-white/30" />
@@ -958,7 +956,7 @@ function App() {
                 />
               </div>
             </div>
-          )}
+          )} */}
         </header>
 
         {ingestProgress && (
@@ -1003,7 +1001,7 @@ function App() {
             </div>
           ) : activeView === 'graph' ? (
             <div className="h-full overflow-hidden rounded-3xl border border-white/5 bg-[#0a0c12]/50">
-              <KnowledgeGraph pages={wikiPages} onNodeClick={(node) => void fetchPageContent(node.id)} />
+              <KnowledgeGraph pages={wikiPageMeta} onNodeClick={(node) => void fetchPageContent(node.id)} />
             </div>
           ) : activeView === 'builder' ? (
             <div className="h-full overflow-y-auto pr-2 custom-scrollbar">
@@ -1013,7 +1011,6 @@ function App() {
             <ChatView
               selectedModel={selectedModel}
               models={models}
-              wikiPages={wikiPages}
               selectedWikiId={selectedWikiId}
               selectedWikiName={currentWiki?.name || 'Untitled Wiki'}
               onNavigate={(page) => void fetchPageContent(page, selectedWikiId, true)}
@@ -1070,29 +1067,35 @@ function App() {
                 </div>
               )}
 
-              <div className="prose prose-invert max-w-none rounded-[2rem] border border-white/10 bg-white/[0.03] p-8 prose-headings:mb-4 prose-headings:font-black prose-headings:tracking-tight prose-headings:text-white prose-h1:text-4xl prose-h2:mt-10 prose-h2:text-2xl prose-h3:mt-8 prose-h3:text-xl prose-p:my-5 prose-p:text-[17px] prose-p:leading-8 prose-p:text-white/75 prose-ul:my-6 prose-ul:list-disc prose-ul:pl-6 prose-ol:my-6 prose-ol:list-decimal prose-ol:pl-6 prose-li:my-2 prose-li:text-white/75 prose-strong:text-white prose-a:text-sky-300 prose-blockquote:border-l prose-blockquote:border-white/15 prose-blockquote:pl-4 prose-blockquote:text-white/60 prose-hr:my-10 prose-hr:border-white/10 prose-table:my-8 prose-table:w-full prose-thead:border-b prose-thead:border-white/10 prose-th:p-3 prose-th:text-left prose-th:text-white prose-td:border-b prose-td:border-white/5 prose-td:p-3 prose-code:rounded-md prose-code:bg-white/5 prose-code:px-1.5 prose-code:py-0.5 prose-code:text-primary prose-code:before:content-none prose-code:after:content-none prose-pre:rounded-2xl prose-pre:border prose-pre:border-white/10 prose-pre:bg-[#0a0c12]">
+              <div className="prose prose-invert max-w-none py-8 px-2 prose-headings:mb-4 prose-headings:font-black prose-headings:tracking-tight prose-headings:text-white prose-h1:text-4xl prose-h2:mt-10 prose-h2:text-2xl prose-h3:mt-8 prose-h3:text-xl prose-p:my-5 prose-p:text-[17px] prose-p:leading-8 prose-p:text-white/75 prose-ul:my-6 prose-ul:list-disc prose-ul:pl-6 prose-ol:my-6 prose-ol:list-decimal prose-ol:pl-6 prose-li:my-2 prose-li:text-white/75 prose-strong:text-white prose-a:text-sky-300 prose-blockquote:border-l prose-blockquote:border-white/15 prose-blockquote:pl-4 prose-blockquote:text-white/60 prose-hr:my-10 prose-hr:border-white/10 prose-table:my-8 prose-table:w-full prose-thead:border-b prose-thead:border-white/10 prose-th:p-3 prose-th:text-left prose-th:text-white prose-td:border-b prose-td:border-white/5 prose-td:p-3 prose-code:rounded-md prose-code:bg-white/5 prose-code:px-1.5 prose-code:py-0.5 prose-code:text-primary prose-code:before:content-none prose-code:after:content-none prose-pre:rounded-2xl prose-pre:border prose-pre:border-white/10 prose-pre:bg-[#0a0c12]">
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
+                  urlTransform={(value: string) => value}
                   components={{
-                    a: ({ href, children }) =>
-                      href?.startsWith('wiki://') || href?.startsWith('source://') ? (
-                        <button
-                          type="button"
-                          onClick={() => openInternalWikiLink(href)}
-                          className="cursor-pointer text-left text-sky-300 underline underline-offset-4 transition hover:text-sky-200"
-                        >
-                          {children}
-                        </button>
-                      ) : (
+                    a: ({ href, children }) => {
+                      const isInternalWikiLink = href && !href.startsWith('http://') && !href.startsWith('https://') && !href.startsWith('#') && !href.startsWith('mailto:') && !href.startsWith('tel:');
+                      if (isInternalWikiLink) {
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => openInternalWikiLink(href)}
+                            className="cursor-pointer text-left text-sky-300 underline underline-offset-4 transition hover:text-sky-200"
+                          >
+                            {children}
+                          </button>
+                        );
+                      }
+                      return (
                         <a
                           href={href}
-                          target="_blank"
+                          target={href?.startsWith('#') ? undefined : "_blank"}
                           rel="noopener noreferrer"
                           className="cursor-pointer text-sky-300 underline underline-offset-4 transition hover:text-sky-200"
                         >
                           {children}
                         </a>
-                      ),
+                      );
+                    },
                   }}
                 >
                   {markdown}

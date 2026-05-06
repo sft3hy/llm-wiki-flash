@@ -246,10 +246,13 @@ const WikiBuilderView: React.FC<WikiBuilderViewProps> = ({
       return;
     }
     if (href.startsWith('wiki://')) {
-      await loadContent('wiki', `${href.replace('wiki://', '')}.md`);
+      const rawName = href.replace('wiki://', '');
+      await loadContent('wiki', rawName.endsWith('.md') ? rawName : `${rawName}.md`);
     } else if (href.startsWith('source://')) {
       const rawName = href.replace('source://', '');
       await loadContent('source', rawName.endsWith('.md') ? rawName : `${rawName}.md`);
+    } else if (!href.startsWith('http://') && !href.startsWith('https://') && !href.startsWith('#') && !href.startsWith('mailto:') && !href.startsWith('tel:')) {
+      await loadContent('wiki', href.endsWith('.md') ? href : `${href}.md`);
     } else {
       window.open(href, '_blank', 'noopener,noreferrer');
     }
@@ -607,15 +610,31 @@ const WikiBuilderView: React.FC<WikiBuilderViewProps> = ({
                   {previewContent ? (
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
+                      urlTransform={(value: string) => value}
                       components={{
-                        a: ({ href, children }) => (
-                          <button
-                            onClick={() => void openInternalLink(href)}
-                            className="cursor-pointer text-left text-sky-300 underline underline-offset-4 transition-colors hover:text-sky-200"
-                          >
-                            {children}
-                          </button>
-                        ),
+                        a: ({ href, children }) => {
+                          const isInternalWikiLink = href && !href.startsWith('http://') && !href.startsWith('https://') && !href.startsWith('#') && !href.startsWith('mailto:') && !href.startsWith('tel:');
+                          if (isInternalWikiLink) {
+                            return (
+                              <button
+                                onClick={() => void openInternalLink(href)}
+                                className="cursor-pointer text-left text-sky-300 underline underline-offset-4 transition-colors hover:text-sky-200"
+                              >
+                                {children}
+                              </button>
+                            );
+                          }
+                          return (
+                            <a
+                              href={href}
+                              target={href?.startsWith('#') ? undefined : "_blank"}
+                              rel="noopener noreferrer"
+                              className="cursor-pointer text-sky-300 underline underline-offset-4 transition-colors hover:text-sky-200"
+                            >
+                              {children}
+                            </a>
+                          );
+                        },
                       }}
                     >
                       {previewMarkdown}

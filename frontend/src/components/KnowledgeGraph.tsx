@@ -11,24 +11,37 @@ interface Link {
   target: string;
 }
 
+interface WikiPageSummary {
+  name: string;
+  title: string;
+  links?: string[];
+}
+
 interface GraphProps {
-  pages: string[];
+  pages: WikiPageSummary[];
   onNodeClick: (node: any) => void;
 }
 
+const GOVERNANCE_PAGE_NAMES = new Set(['SCHEMA.md', 'index.md', 'log.md']);
+
 const KnowledgeGraph: React.FC<GraphProps> = ({ pages, onNodeClick }) => {
   const data = useMemo(() => {
-    const nodes: Node[] = pages.map(p => ({ id: p, name: p.replace('.md', '') }));
+    const contentPages = pages.filter(p => !GOVERNANCE_PAGE_NAMES.has(p.name));
+    
+    const nodes: Node[] = contentPages.map(p => ({ id: p.name, name: p.title || p.name.replace('.md', '') }));
     const links: Link[] = [];
     
-    // Simple mock logic: connect everything to index.md if it exists
-    if (pages.includes('index.md')) {
-      pages.forEach(p => {
-        if (p !== 'index.md') {
-          links.push({ source: 'index.md', target: p });
-        }
-      });
-    }
+    // Connect actual extracted links
+    contentPages.forEach(p => {
+      if (p.links) {
+        p.links.forEach(target => {
+          // Verify target node exists and is not a governance page
+          if (contentPages.some(page => page.name === target)) {
+            links.push({ source: p.name, target: target });
+          }
+        });
+      }
+    });
 
     return { nodes, links };
   }, [pages]);

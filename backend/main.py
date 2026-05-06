@@ -22,7 +22,12 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from wiki_builder.chat import chat_with_topic
 from wiki_builder.config import GenericJSONSearchConfig, PipelineConfig, SearxngConfig
 from wiki_builder.pipeline import PipelineRunner
+import chat_db
+import uuid
+import datetime
 from wiki_registry import WikiRegistry
+
+chat_db.init_db()
 
 logger = logging.getLogger("llm-wiki")
 logging.basicConfig(level=logging.INFO)
@@ -601,9 +606,28 @@ async def chat(request: ChatRequest):
         )
         
         wiki_info = wiki_registry.load_wiki(resolved_wiki_id)
+        
+        # Save messages to database
+        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        user_msg_id = uuid.uuid4().hex
+        bot_msg_id = uuid.uuid4().hex
+        
+        chat_db.save_message(user_msg_id, resolved_wiki_id, request.message, "user", timestamp)
+        chat_db.save_message(bot_msg_id, resolved_wiki_id, result["response"], "bot", timestamp, request.model, result.get("context"))
+
         return {"response": result["response"], "context": result["context"], "wiki_id": resolved_wiki_id, "wiki_name": wiki_info["name"]}
     except Exception as e:
         logger.error(f"Chat error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/chat/{wiki_id}")
+async def get_chat_history_endpoint(wiki_id: str):
+    try:
+        resolved_wiki_id, _ = _get_wiki_paths(wiki_id)
+        history = chat_db.get_chat_history(resolved_wiki_id)
+        return {"history": history}
+    except Exception as e:
+        logger.error(f"Failed to fetch chat history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

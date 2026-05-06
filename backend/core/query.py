@@ -39,11 +39,32 @@ class QueryEngine:
 
     async def search(self, query: str, k: int = 6, document: str = None):
         """Semantic search returning formatted string context with MMR for diversity."""
-        search_kwargs = {"k": k, "fetch_k": 20}
         if document:
-            search_kwargs["filter"] = {"source": document}
+            results = self.vectorstore.max_marginal_relevance_search(query, k=k, fetch_k=20, filter={"source": document})
+        else:
+            wiki_k = max(1, int(k * 0.7))
+            source_k = k - wiki_k
             
-        results = self.vectorstore.max_marginal_relevance_search(query, **search_kwargs)
+            wiki_results = []
+            try:
+                wiki_results = self.vectorstore.max_marginal_relevance_search(
+                    query, k=wiki_k, fetch_k=20, filter={"type": "wiki_page"}
+                )
+            except Exception:
+                pass
+                
+            source_k += max(0, wiki_k - len(wiki_results))
+            
+            source_results = []
+            try:
+                source_results = self.vectorstore.max_marginal_relevance_search(
+                    query, k=source_k, fetch_k=20, filter={"type": "source"}
+                )
+            except Exception:
+                pass
+                
+            results = wiki_results + source_results
+
         if not results:
             return ""
         
@@ -58,7 +79,8 @@ class QueryEngine:
             seen_content.add(content_norm)
             
             source = doc.metadata.get("source", "Unknown")
-            context_parts.append(f"--- Document {len(context_parts)+1} (Source: {source}) ---\n{doc.page_content}")
+            type_label = doc.metadata.get("type", "Unknown")
+            context_parts.append(f"--- Document {len(context_parts)+1} (Source: {source}, Type: {type_label}) ---\n{doc.page_content}")
             
         return "\n\n".join(context_parts)
 

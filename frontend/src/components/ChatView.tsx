@@ -23,7 +23,6 @@ interface Model {
 interface ChatViewProps {
   selectedModel: string;
   models: Model[];
-  wikiPages: string[];
   selectedWikiId: string;
   selectedWikiName: string;
   onNavigate?: (page: string) => void;
@@ -33,14 +32,11 @@ interface ChatViewProps {
 const ChatView: React.FC<ChatViewProps> = ({
   selectedModel,
   models,
-  wikiPages,
   selectedWikiId,
   selectedWikiName,
   onNavigate,
   onNavigateSource,
 }) => {
-  const [overrideModel, setOverrideModel] = useState('');
-  const [selectedDocument, setSelectedDocument] = useState('');
   const [input, setInput] = useState('');
   const [expandedContext, setExpandedContext] = useState<Record<string, boolean>>({});
   const [messages, setMessages] = useState<Message[]>([]);
@@ -52,16 +48,43 @@ const ChatView: React.FC<ChatViewProps> = ({
   }, [messages, isTyping]);
 
   useEffect(() => {
-    setSelectedDocument('');
-    setOverrideModel('');
-    setMessages([
-      {
-        id: `chat-${selectedWikiId}`,
-        text: `You're chatting with "${selectedWikiName}". Retrieval is scoped to this wiki.`,
-        sender: 'bot',
-        timestamp: new Date(),
-      },
-    ]);
+    const fetchHistory = async () => {
+      try {
+        const response = await axios.get(`${API_BASE}/chat/${selectedWikiId}`);
+        const history = response.data.history;
+        if (history && history.length > 0) {
+          setMessages(history.map((msg: any) => ({
+            id: msg.id,
+            text: msg.text,
+            sender: msg.sender,
+            timestamp: new Date(msg.timestamp),
+            model: msg.model,
+            context: msg.context
+          })));
+        } else {
+          setMessages([
+            {
+              id: `chat-${selectedWikiId}`,
+              text: `You're chatting with "${selectedWikiName}". Retrieval is scoped to this wiki.`,
+              sender: 'bot',
+              timestamp: new Date(),
+            },
+          ]);
+        }
+      } catch (error) {
+        console.error('Failed to load chat history:', error);
+        setMessages([
+          {
+            id: `chat-${selectedWikiId}`,
+            text: `You're chatting with "${selectedWikiName}". Retrieval is scoped to this wiki.`,
+            sender: 'bot',
+            timestamp: new Date(),
+          },
+        ]);
+      }
+    };
+
+    void fetchHistory();
   }, [selectedWikiId, selectedWikiName]);
 
   const toggleContext = (id: string) => {
@@ -89,16 +112,15 @@ const ChatView: React.FC<ChatViewProps> = ({
     setIsTyping(true);
 
     try {
-      const history = messages.slice(1).map((message) => ({
+      const history = messages.filter(m => !m.id.startsWith('chat-')).map((message) => ({
         role: message.sender === 'user' ? 'user' : 'assistant',
         content: message.text,
       }));
-      const modelToUse = overrideModel || selectedModel;
+      const modelToUse = selectedModel;
       const response = await axios.post(`${API_BASE}/chat`, {
         message: messageText,
         history,
         model: modelToUse,
-        document: selectedDocument || undefined,
         wiki_id: selectedWikiId,
       });
 
@@ -142,71 +164,60 @@ const ChatView: React.FC<ChatViewProps> = ({
     'How do the key ideas relate to each other?',
     'What is still missing or contradictory?',
   ];
-  const selectablePages = wikiPages.filter((page) => page !== 'SCHEMA.md');
 
   return (
-    <div className="grid h-full min-h-0 gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
-      <section className="flex min-h-0 flex-col rounded-[2rem] border border-white/10 bg-white/[0.03] shadow-2xl">
-        <div className="border-b border-white/10 px-6 py-5">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.18em] text-white/35">
-                <MessageSquare className="h-3.5 w-3.5" />
-                <span>Knowledge Chat</span>
-              </div>
-              <h2 className="mt-2 text-2xl font-black text-white">{selectedWikiName}</h2>
-              <p className="mt-1 max-w-2xl text-sm text-white/50">Ask questions against this wiki only. The scope label below reflects the active wiki, not a global corpus.</p>
+    <div className="h-full min-h-0">
+      <section className="flex h-full min-h-0 flex-col rounded-none">
+        {/* <div className="border-b border-white/10 px-6 py-5">
+          <div>
+            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.18em] text-white/35">
+              <MessageSquare className="h-3.5 w-3.5" />
+              <span>Knowledge Chat</span>
             </div>
-            <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-right">
-              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/35">Master Model</p>
-              <p className="mt-1 text-sm font-semibold text-white/85">{getModelDisplayName(selectedModel)}</p>
-            </div>
+            <h2 className="mt-2 text-2xl font-black text-white">{selectedWikiName}</h2>
+            <p className="mt-1 max-w-2xl text-sm text-white/50">Ask questions against the whole selected wiki. Related answers stay scoped to this knowledge base only.</p>
           </div>
-        </div>
+        </div> */}
 
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6 custom-scrollbar">
-          {messages.length === 1 && (
-            <div className="flex min-h-full flex-col items-center justify-center space-y-8 py-8 text-center">
-              <div className="rounded-3xl bg-primary/10 p-4">
-                <Sparkles className="h-12 w-12 animate-pulse text-primary" />
-              </div>
-              <div className="space-y-2">
-                <h3 className="text-2xl font-bold text-white">Wiki Intelligence</h3>
-                <p className="mx-auto max-w-lg text-white/40">Use Knowledge Chat to summarize pages, compare concepts, and ask questions about only the selected wiki.</p>
-                <p className="text-xs font-bold uppercase tracking-[0.2em] text-primary/70">Active Wiki: {selectedWikiName}</p>
-              </div>
-              <div className="grid w-full max-w-2xl gap-3 md:grid-cols-2">
-                {suggestions.map((suggestion) => (
-                  <button
-                    key={suggestion}
-                    onClick={() => void handleSend(suggestion)}
-                    className="rounded-2xl border border-white/5 bg-white/[0.03] p-4 text-left text-sm text-white/60 transition-all hover:border-primary/20 hover:bg-white/5 hover:text-white"
-                  >
-                    {suggestion}
-                  </button>
-                ))}
-              </div>
+          <div className="mb-8 flex flex-col items-center justify-center space-y-8 py-8 text-center">
+            <div className="rounded-3xl bg-primary/10 p-4">
+              <Sparkles className="h-12 w-12 animate-pulse text-primary" />
             </div>
-          )}
+            <div className="space-y-2">
+              <h3 className="text-2xl font-bold text-white">Wiki Intelligence</h3>
+              <p className="mx-auto max-w-lg text-white/40">Use Knowledge Chat to summarize pages, compare concepts, and ask questions about only the selected wiki.</p>
+              <p className="text-xs font-bold uppercase tracking-[0.2em] text-primary/70">Active Wiki: {selectedWikiName}</p>
+            </div>
+            <div className="grid w-full max-w-2xl gap-3 md:grid-cols-2">
+              {suggestions.map((suggestion) => (
+                <button
+                  key={suggestion}
+                  onClick={() => void handleSend(suggestion)}
+                  className="rounded-2xl border border-white/5 bg-white/[0.03] p-4 text-left text-sm text-white/60 transition-all hover:border-primary/20 hover:bg-white/5 hover:text-white"
+                >
+                  {suggestion}
+                </button>
+              ))}
+            </div>
+          </div>
 
           <div className="space-y-6">
             {messages.map((message) => (
               <div key={message.id} className={`flex items-start gap-4 ${message.sender === 'user' ? 'flex-row-reverse' : ''}`}>
                 <div
-                  className={`flex h-10 w-10 flex-none items-center justify-center rounded-2xl ${
-                    message.sender === 'bot' ? 'bg-gradient-to-br from-primary to-blue-600 text-white' : 'bg-white/10 text-white/70'
-                  }`}
+                  className={`flex h-10 w-10 flex-none items-center justify-center rounded-2xl ${message.sender === 'bot' ? 'bg-gradient-to-br from-primary to-blue-600 text-white' : 'bg-white/10 text-white/70'
+                    }`}
                 >
                   {message.sender === 'bot' ? <Bot className="h-5 w-5" /> : <User className="h-5 w-5" />}
                 </div>
 
                 <div className={`min-w-0 max-w-[82%] space-y-2 ${message.sender === 'user' ? 'items-end' : ''}`}>
                   <div
-                    className={`rounded-2xl border p-4 shadow-xl ${
-                      message.sender === 'bot'
-                        ? 'glass rounded-tl-none border-white/10 text-white/90'
-                        : 'rounded-tr-none border-primary/20 bg-primary/20 text-white'
-                    }`}
+                    className={`rounded-2xl border p-4 shadow-xl ${message.sender === 'bot'
+                      ? 'glass rounded-tl-none border-white/10 text-white/90'
+                      : 'rounded-tr-none border-primary/20 bg-primary/20 text-white'
+                      }`}
                   >
                     {message.sender === 'bot' ? (
                       <ReactMarkdown
@@ -314,8 +325,8 @@ const ChatView: React.FC<ChatViewProps> = ({
           </div>
         </div>
 
-        <div className="border-t border-white/10 px-6 py-5">
-          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_240px_240px]">
+        <div className="px-6 py-5">
+          <div className="grid gap-3">
             <div className="relative rounded-[1.5rem] border border-white/10 bg-[#0a0c12] p-2 pl-5 shadow-2xl">
               <div className="flex items-center">
                 <input
@@ -329,77 +340,26 @@ const ChatView: React.FC<ChatViewProps> = ({
                 <button
                   onClick={() => void handleSend()}
                   disabled={!input.trim() || isTyping}
-                  className="ml-2 rounded-xl bg-primary p-3 text-white shadow-lg shadow-primary/20 transition-all hover:scale-105 active:scale-95 disabled:opacity-50 disabled:hover:scale-100"
+                  aria-label="Send message"
+                  className={`ml-2 rounded-xl p-3 text-white transition-all ${input.trim() && !isTyping
+                    ? 'bg-blue-600 shadow-lg shadow-blue-600/20 hover:scale-105 active:scale-95'
+                    : 'bg-white/10 text-white/35'
+                    }`}
                 >
                   <Send className="h-5 w-5" />
                 </button>
               </div>
             </div>
-
-            <select
-              className="rounded-2xl border border-white/10 bg-[#0a0c12] px-4 py-3 text-sm text-white/80 outline-none focus:border-primary/50"
-              value={selectedDocument}
-              onChange={(event) => setSelectedDocument(event.target.value)}
-            >
-              <option value="">{selectedWikiName}</option>
-              {selectablePages.map((page) => (
-                <option key={page} value={page}>
-                  {page.replace('.md', '')}
-                </option>
-              ))}
-            </select>
-
-            <select
-              className="rounded-2xl border border-white/10 bg-[#0a0c12] px-4 py-3 text-sm text-white/80 outline-none focus:border-primary/50"
-              value={overrideModel}
-              onChange={(event) => setOverrideModel(event.target.value)}
-            >
-              <option value="">Use Master Model ({getModelDisplayName(selectedModel)})</option>
-              {models.map((model) => (
-                <option key={model.model_id} value={model.model_id}>
-                  {model.display_name}
-                </option>
-              ))}
-            </select>
           </div>
-          <p className="mt-4 text-center text-[10px] font-bold uppercase tracking-[0.2em] text-white/20">
+          {/* <p className="mt-4 text-center text-[10px] font-bold uppercase tracking-[0.2em] text-white/20">
             <Sparkles className="mb-0.5 mr-1 inline-block h-3 w-3" />
-            {selectedWikiName} • {getModelDisplayName(overrideModel || selectedModel)}
-          </p>
+            {selectedWikiName} • {getModelDisplayName(selectedModel)}
+          </p> */}
         </div>
       </section>
-
-      <aside className="min-h-0 overflow-hidden rounded-[2rem] border border-white/10 bg-white/[0.03] p-5">
-        <div className="space-y-5">
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/35">Chat Scope</p>
-            <p className="mt-2 text-sm text-white/65">Default scope is the active wiki: <span className="font-semibold text-white">{selectedWikiName}</span>.</p>
-          </div>
-
-          <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/35">Current Scope</p>
-            <p className="mt-2 text-sm font-semibold text-white">{selectedDocument ? selectedDocument.replace('.md', '') : selectedWikiName}</p>
-            <p className="mt-1 text-xs text-white/40">{selectedDocument ? 'Scoped to one page.' : 'Searching across the selected wiki only.'}</p>
-          </div>
-
-          <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/35">Available Pages</p>
-            <div className="mt-3 max-h-64 space-y-2 overflow-y-auto pr-1 custom-scrollbar">
-              {selectablePages.map((page) => (
-                <button
-                  key={page}
-                  onClick={() => onNavigate && onNavigate(page)}
-                  className="w-full rounded-xl border border-white/5 bg-white/[0.03] px-3 py-2 text-left text-xs text-white/65 transition hover:bg-white/5 hover:text-white"
-                >
-                  {page.replace('.md', '')}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      </aside>
     </div>
   );
 };
 
 export default ChatView;
+
