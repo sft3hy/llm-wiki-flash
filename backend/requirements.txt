@@ -14,3 +14,4 @@ langchain-chroma
 langchain-text-splitters
 langgraph
 sse-starlette
+ollama

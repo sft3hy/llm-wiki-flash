@@ -27,7 +27,7 @@ class LintEngine:
             return []
         return [
             f for f in os.listdir(self.wiki_dir)
-            if f.endswith(".md") and f not in ("SCHEMA.md",)
+            if f.endswith(".md") and f not in ("SCHEMA.md", "purpose.md")
         ]
 
     def _read_page(self, filename: str) -> str:
@@ -127,7 +127,7 @@ class LintEngine:
 
         # Check orphan pages (no inbound links, not index/log)
         for page, inbound in inbound_links.items():
-            if page in ("index.md", "log.md", "SCHEMA.md"):
+            if page in ("index.md", "log.md", "SCHEMA.md", "purpose.md"):
                 continue
             if len(inbound) == 0:
                 results["orphan_pages"].append(page)

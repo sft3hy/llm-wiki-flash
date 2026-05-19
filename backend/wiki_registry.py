@@ -13,11 +13,12 @@ from core.query import QueryEngine
 from wiki_builder.utils import ensure_directory, slugify
 
 
-SYSTEM_PAGES = {"index.md", "log.md", "SCHEMA.md"}
+SYSTEM_PAGES = {"index.md", "log.md", "SCHEMA.md", "purpose.md"}
 EMBED_CHUNK_SIZE = 1200
 EMBED_CHUNK_OVERLAP = 150
 DEFAULT_INDEX_CONTENT = "# Wiki Index\n## Map of Content\n"
 DEFAULT_LOG_CONTENT = "# Compilation Log\n\n"
+DEFAULT_PURPOSE_CONTENT = "# Wiki Purpose\n\nDefines goals, key questions, research scope, and evolving thesis.\n"
 
 
 def _timestamp() -> str:
@@ -46,6 +47,7 @@ class WikiRegistry:
         legacy_raw_dir: Path,
         legacy_wiki_dir: Path,
         canonical_schema_path: Path | None = None,
+        canonical_purpose_path: Path | None = None,
         legacy_index_template_path: Path | None = None,
         legacy_log_template_path: Path | None = None,
     ):
@@ -53,6 +55,7 @@ class WikiRegistry:
         self.legacy_raw_dir = Path(legacy_raw_dir)
         self.legacy_wiki_dir = Path(legacy_wiki_dir)
         self.canonical_schema_path = Path(canonical_schema_path) if canonical_schema_path else self.legacy_wiki_dir / "SCHEMA.md"
+        self.canonical_purpose_path = Path(canonical_purpose_path) if canonical_purpose_path else self.legacy_wiki_dir / "purpose.md"
         self.legacy_index_template_path = Path(legacy_index_template_path) if legacy_index_template_path else self.legacy_wiki_dir / "index.md"
         self.legacy_log_template_path = Path(legacy_log_template_path) if legacy_log_template_path else self.legacy_wiki_dir / "log.md"
         ensure_directory(self.wikis_root)
@@ -162,9 +165,13 @@ class WikiRegistry:
         pages: list[dict[str, Any]] = []
         if not paths.wiki_dir.exists():
             return pages
+
+        # First pass: collect pages and their explicit links
+        page_contents: dict[str, str] = {}
         for file_path in sorted(paths.wiki_dir.glob("*.md")):
             content = file_path.read_text(encoding="utf-8")
-            
+            page_contents[file_path.name] = content
+
             links = set()
             for match in re.findall(r"\[\[(.*?)\]\]", content):
                 link_target = match.split("|", 1)[0].strip()
@@ -185,10 +192,31 @@ class WikiRegistry:
             pages.append(
                 {
                     "name": file_path.name,
-                    "title": self._extract_markdown_title(content, file_path.stem.replace("-", " ").title()),
+                    "title": file_path.stem.replace("-", " ").title(),
                     "links": list(links)
                 }
             )
+
+        # Second pass: detect implicit content-based cross-references
+        # If page A's body text mentions page B's slug (humanized), add a link.
+        all_names = {p["name"] for p in pages}
+        system_names = {"SCHEMA.md", "index.md", "log.md", "purpose.md"}
+        content_pages = [p for p in pages if p["name"] not in system_names]
+
+        for page in content_pages:
+            content_lower = page_contents.get(page["name"], "").lower()
+            existing_links = set(page["links"])
+            for other in content_pages:
+                if other["name"] == page["name"]:
+                    continue
+                if other["name"] in existing_links:
+                    continue
+                other_slug = other["name"].replace(".md", "")
+                other_human = other_slug.replace("-", " ")
+                # Check if the other page's humanized slug appears in this page's content
+                if other_human in content_lower:
+                    page["links"].append(other["name"])
+
         return pages
 
     def list_sources(self, wiki_id: str) -> list[dict[str, Any]]:
@@ -205,7 +233,7 @@ class WikiRegistry:
             sources.append(
                 {
                     "name": file_path.name,
-                    "title": self._extract_markdown_title(preview, file_path.stem.replace("-", " ").title()),
+                    "title": file_path.stem.replace("-", " ").title(),
                     "snippet": preview[:240],
                 }
             )
@@ -226,7 +254,7 @@ class WikiRegistry:
         page_names = {page["name"].replace(".md", "") for page in pages}
         broken_links = []
         for page in pages:
-            if page["name"] == "SCHEMA.md":
+            if page["name"] in ("SCHEMA.md", "purpose.md"):
                 continue
             content = (paths.wiki_dir / page["name"]).read_text(encoding="utf-8")
             for match in re.findall(r"\[\[(.*?)\]\]", content):
@@ -295,11 +323,7 @@ class WikiRegistry:
             "embeddings_dir": str(paths.embeddings_dir),
         }
 
-    def _extract_markdown_title(self, content: str, fallback: str) -> str:
-        for line in content.splitlines():
-            if line.startswith("# "):
-                return line[2:].strip()
-        return fallback
+
 
     def _chunk_text(self, content: str) -> list[str]:
         if not content:
@@ -355,6 +379,8 @@ class WikiRegistry:
     def _ensure_wiki_scaffold(self, paths: WikiPaths) -> None:
         ensure_directory(paths.wiki_dir)
         self._ensure_seed_file(self.canonical_schema_path, paths.wiki_dir / "SCHEMA.md")
+        self._ensure_seed_file(self.canonical_purpose_path, paths.wiki_dir / "purpose.md")
+        self._ensure_blank_seed(paths.wiki_dir / "purpose.md", DEFAULT_PURPOSE_CONTENT)
         self._ensure_blank_seed(paths.wiki_dir / "index.md", DEFAULT_INDEX_CONTENT, self.legacy_index_template_path)
         self._ensure_blank_seed(paths.wiki_dir / "log.md", DEFAULT_LOG_CONTENT, self.legacy_log_template_path)
 

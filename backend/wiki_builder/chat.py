@@ -12,7 +12,7 @@ from .utils import normalize_whitespace, sentence_split
 
 
 TOKEN_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9\-]{2,}")
-SYSTEM_WIKI_DOCUMENTS = {"SCHEMA.md", "index.md", "log.md"}
+SYSTEM_WIKI_DOCUMENTS = {"SCHEMA.md", "index.md", "log.md", "purpose.md"}
 
 
 @dataclass(slots=True)
@@ -137,11 +137,20 @@ async def chat_with_topic(
         document_name=document_name,
         document_kind=document_kind,
     )
+    
+    purpose_content = ""
+    purpose_path = vault_path / wiki_id / "wiki" / "purpose.md"
+    if purpose_path.exists():
+        purpose_content = purpose_path.read_text(encoding="utf-8")
+        
+    purpose_section = f"\n\nWIKI PURPOSE & DIRECTION:\n{purpose_content}" if purpose_content else ""
+
     page_list = ", ".join(available_pages) if available_pages else "none"
     system_prompt = f"""IMPORTANT: PROVIDE DIRECT RESPONSES ONLY. DO NOT INCLUDE ANY INTERNAL MONOLOGUES, THINKING, OR <thought> TAGS.
 
 You are the wiki-builder assistant for a locally generated research vault.
-Answer only from the provided context. If the context is insufficient, say so clearly.
+Answer only from the provided context. If the context is insufficient, say so clearly.{purpose_section}
+If the user explicitly asks to update the wiki purpose/thesis, output the complete new purpose wrapped exactly in <UPDATE_PURPOSE>...</UPDATE_PURPOSE> tags.
 
 AVAILABLE WIKI PAGES:
 {page_list}

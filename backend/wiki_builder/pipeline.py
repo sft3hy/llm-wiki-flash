@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Callable
@@ -11,7 +12,6 @@ from .models import FetchedSource, PipelineRunResult, SearchResult
 from .obsidian import ObsidianWriter
 from .search import SearchService
 from .utils import ensure_directory, slugify
-from .wiki import WikiGenerator
 
 
 class PipelineRunner:
@@ -81,17 +81,77 @@ class PipelineRunner:
         self._emit("ingest", f"Stored {len(note_paths)} source notes", 84, topic=topic, count=len(note_paths))
         return note_paths
 
-    def generate_wiki(self, topic: str, sources: list[FetchedSource], logger: PipelineLogger) -> list[Path]:
-        logger.log("generate", True, "Generating concept wiki", topic=topic, count=len(sources))
-        self._emit("generate", "Synthesizing concept pages and cross-links", 90, topic=topic, count=len(sources))
-        generator = WikiGenerator(self.config.vault_path, model_id=self.config.model_id)
-        page_paths = generator.write_wiki(topic, sources, workspace_id=self.config.workspace_id)
-        logger.log("generate", True, "Completed concept wiki generation", count=len(page_paths))
-        self._emit("generate", f"Generated {len(page_paths)} wiki files", 97, topic=topic, count=len(page_paths))
-        return page_paths
+    def generate_wiki_via_ingest(self, topic: str, sources: list[FetchedSource],
+                                  sources_dir: Path, wiki_dir: Path, embeddings_dir: Path,
+                                  logger: PipelineLogger) -> dict:
+        """
+        Convert fetched web sources into IngestEngine documents and process
+        them through the unified ingest pipeline (SHA256 cache, queue, traceability).
+        """
+        from core.ingest import IngestEngine
+
+        logger.log("generate", True, "Generating wiki via unified ingest pipeline", topic=topic, count=len(sources))
+        self._emit("generate", "Feeding sources into the ingest pipeline", 86, topic=topic, count=len(sources))
+
+        # Convert FetchedSource objects into the document format IngestEngine expects
+        documents = []
+        for source in sources:
+            content = source.cleaned_content
+            if not content or not content.strip():
+                continue
+            # Use source_id as filename to preserve traceability
+            filename = f"{source.source_id}.md" if source.source_id else f"{slugify(source.title)}.md"
+            documents.append({
+                "filename": filename,
+                "content": content,
+                "source_type": "web",
+            })
+
+        if not documents:
+            logger.log("generate", False, "No usable source content to ingest", topic=topic)
+            return {"pages_created": [], "pages_updated": [], "documents_processed": 0}
+
+        wiki_id = self.config.workspace_id or slugify(topic)
+        engine = IngestEngine(
+            raw_dir=str(sources_dir),
+            wiki_dir=str(wiki_dir),
+            model_id=self.config.model_id,
+            embeddings_dir=str(embeddings_dir),
+            wiki_id=wiki_id,
+        )
+
+        # Run the async process_corpus from a sync context
+        loop = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+
+        if loop and loop.is_running():
+            # We're already in an async context (called from asyncio.to_thread),
+            # so we need a new event loop in this thread
+            new_loop = asyncio.new_event_loop()
+            try:
+                result = new_loop.run_until_complete(engine.process_corpus(topic, documents))
+            finally:
+                new_loop.close()
+        else:
+            result = asyncio.run(engine.process_corpus(topic, documents))
+
+        pages_created = result.get("pages_created", [])
+        pages_updated = result.get("pages_updated", [])
+        total_pages = len(pages_created) + len(pages_updated)
+
+        logger.log("generate", True, "Completed wiki generation via ingest pipeline",
+                    count=total_pages, created=len(pages_created), updated=len(pages_updated))
+        self._emit("generate", f"Generated {total_pages} wiki pages via ingest pipeline", 97,
+                    topic=topic, count=total_pages)
+
+        return result
 
     def run_pipeline(self, topic: str) -> PipelineRunResult:
         topic_slug, raw_dir, log_path, sources_dir, wiki_dir = self._topic_paths(topic)
+        embeddings_dir = ensure_directory(self.config.vault_path / topic_slug / "embeddings")
         logger = PipelineLogger(log_path)
         warnings: list[str] = []
         results = self.discover_sources(topic, logger)
@@ -102,10 +162,16 @@ class PipelineRunner:
             self._emit("search", warning, 24, topic=topic, warning=warning)
         fetched, failures = self.fetch_sources(topic, results, raw_dir, logger)
         note_paths = self.ingest_sources(topic, fetched, logger)
-        wiki_paths = self.generate_wiki(topic, fetched, logger)
+
+        # Use unified ingest pipeline instead of standalone WikiGenerator
+        ingest_result = self.generate_wiki_via_ingest(
+            topic, fetched, sources_dir, wiki_dir, embeddings_dir, logger
+        )
+
         logger.log("generate", True, "Pipeline finished", topic=topic, warnings=warnings)
         self._emit("generate", f"Finished building wiki for {topic}", 100, status="success", topic=topic, warnings=warnings)
-        concept_pages = [path for path in wiki_paths if path.name != "index.md"]
+
+        concept_pages_written = len(ingest_result.get("pages_created", [])) + len(ingest_result.get("pages_updated", []))
         return PipelineRunResult(
             topic=topic,
             topic_slug=topic_slug,
@@ -113,7 +179,7 @@ class PipelineRunner:
             fetched_sources=len(fetched),
             failed_sources=failures,
             source_notes_written=len(note_paths),
-            concept_pages_written=len(concept_pages),
+            concept_pages_written=concept_pages_written,
             raw_sources_dir=str(raw_dir),
             obsidian_sources_dir=str(sources_dir),
             obsidian_wiki_dir=str(wiki_dir),

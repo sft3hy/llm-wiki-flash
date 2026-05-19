@@ -26,8 +26,8 @@ COMPILATION RULES:
    - If it does, INTEGRATE new info — never overwrite existing content.
 2. The 1000-Word Limit: If a single wiki page exceeds 1000 words, refactor it.
    Split into sub-concepts and link them from a parent page.
-3. Mandatory Wikilinks: Use [[page-name]] for all mentions of existing or
-   highly probable wiki entities.
+3. Mandatory Wikilinks: Use [[page-name]] for all mentions of EXISTING wiki entities.
+   Consult the provided Wiki Index/Available Pages list. Do NOT guess probable pages.
 4. Provenance: End every update with a reference: Source: [[raw-doc-id]].
 
 CONFLICT RULES:
@@ -57,6 +57,7 @@ CONCEPT_EXTRACTION_PROMPT = """I have a corpus of raw sources on "{topic}" from 
 {source_summaries}
 
 Read all of these summaries and identify the major underlying concepts. Organize by concept — not by source or by person.
+Ensure each concept name is uniquely and individually named. Even if sources share a name, the concept title must be highly specific and unique to avoid collisions.
 Output a strict JSON list of concepts in this EXACT format:
 [
   {{ "name": "kebab-case-concept-name", "description": "Brief description of the concept" }}
@@ -69,6 +70,11 @@ IMPORTANT: Output ONLY the raw JSON array. Do not include markdown code blocks (
 # ─── Concept Article Generation Prompt ─────────────────────────────────
 CONCEPT_ARTICLE_PROMPT = """You are a Wiki Knowledge Engineer. Your task is to write a standalone wiki article about "{concept_name}" for a curious non-expert.
 
+EXISTING WIKI PAGES (Map of Content):
+{index_content}
+
+Use the above list to link to existing concepts using [[concept-name]] syntax. ONLY link to concepts that are in this list or that you are currently extracting as new concepts. Do NOT guess "probable" pages.
+
 Here is the retrieved text from various sources regarding this concept:
 {retrieved_context}
 
@@ -77,7 +83,7 @@ Write a standalone article that:
 2. Summarizes what the key ideas and evidence say.
 3. Notes where the sources agree.
 4. Specifically flags where they disagree and why (using a "## Disagreements" section if applicable).
-5. Links to related concepts within the wiki using [[concept-name]] syntax.
+5. Links to related concepts within the wiki using [[concept-name]] syntax (referencing the EXISTING WIKI PAGES list).
 6. Starts with proper YAML frontmatter.
 
 Existing content to preserve and integrate (if any):

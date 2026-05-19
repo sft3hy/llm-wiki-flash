@@ -8,14 +8,16 @@ import {
   CheckCircle2,
   Clock3,
   FolderOpen,
+  Info,
   Library,
   Link2,
   LoaderCircle,
   Search,
 } from 'lucide-react';
 
+
 const API_BASE = 'http://localhost:8000';
-const DEFAULT_SEARXNG_URL = import.meta.env.VITE_SEARXNG_URL || 'http://localhost:8080';
+
 
 interface Model {
   model_id: string;
@@ -84,7 +86,7 @@ const STAGES = [
   { key: 'fetch', label: 'Fetch', description: 'Download pages and store raw content.' },
   { key: 'parse', label: 'Parse', description: 'Extract the article body and metadata.' },
   { key: 'ingest', label: 'Ingest', description: 'Write source notes into the wiki folder.' },
-  { key: 'generate', label: 'Generate', description: 'Build concept pages and the index.' },
+  { key: 'generate', label: 'Generate', description: 'LLM builds concept pages and the index.' },
 ] as const;
 
 const rewriteObsidianLinks = (content: string) =>
@@ -105,8 +107,7 @@ const WikiBuilderView: React.FC<WikiBuilderViewProps> = ({
   onWikiUpdated,
 }) => {
   const [topic, setTopic] = useState('');
-  const [searxngUrl, setSearxngUrl] = useState(() => localStorage.getItem('wiki-builder-searxng-url') || DEFAULT_SEARXNG_URL);
-  const [searchApiUrl, setSearchApiUrl] = useState(() => localStorage.getItem('wiki-builder-search-api-url') || '');
+
   const [isRunning, setIsRunning] = useState(false);
   const [progressEvent, setProgressEvent] = useState<BuilderProgressEvent | null>(null);
   const [events, setEvents] = useState<Array<BuilderProgressEvent & { id: string }>>([]);
@@ -117,13 +118,6 @@ const WikiBuilderView: React.FC<WikiBuilderViewProps> = ({
   const [previewContent, setPreviewContent] = useState('');
   const [loadingTopic, setLoadingTopic] = useState(false);
 
-  useEffect(() => {
-    localStorage.setItem('wiki-builder-searxng-url', searxngUrl);
-  }, [searxngUrl]);
-
-  useEffect(() => {
-    localStorage.setItem('wiki-builder-search-api-url', searchApiUrl);
-  }, [searchApiUrl]);
 
   useEffect(() => {
     if (selectedWikiName) {
@@ -210,10 +204,6 @@ const WikiBuilderView: React.FC<WikiBuilderViewProps> = ({
       alert('Please enter a research topic.');
       return;
     }
-    if (!searxngUrl.trim() && !searchApiUrl.trim()) {
-      alert('Provide a SearXNG URL or a fallback search API URL.');
-      return;
-    }
 
     setIsRunning(true);
     setProgressEvent(null);
@@ -227,8 +217,6 @@ const WikiBuilderView: React.FC<WikiBuilderViewProps> = ({
         topic: trimmedTopic,
         wiki_id: selectedWikiId,
         model: selectedModel,
-        searxng_url: searxngUrl.trim() || undefined,
-        search_api_url: searchApiUrl.trim() || undefined,
       });
       const nextResult: BuilderRunResult = response.data;
       setResult(nextResult);
@@ -278,15 +266,15 @@ const WikiBuilderView: React.FC<WikiBuilderViewProps> = ({
             <div className="space-y-3">
               <div className="inline-flex items-center space-x-2 rounded-full border border-sky-400/20 bg-sky-400/10 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.24em] text-sky-200/80">
                 <Activity className="h-3 w-3" />
-                <span>Persistent Wiki Builder</span>
+                <span>Wiki Builder</span>
               </div>
-              <h2 className="text-4xl font-black tracking-tight text-white">Research into the selected wiki, then review what it built.</h2>
+              <h2 className="text-4xl font-black tracking-tight text-white">Research a specific topic, then review what the system builds.</h2>
               <p className="max-w-2xl text-sm leading-7 text-white/55">
-                This pipeline writes sources, concept pages, and embeddings into <span className="font-semibold text-white">{selectedWikiName}</span>. Nothing spills into other wikis.
+                This pipeline writes sources, concept pages, and embeddings into the <span className="font-semibold text-white">{selectedWikiName}</span> Wiki. Nothing spills into other wikis.
               </p>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-4 sm:grid-cols-2">
               <label className="space-y-2">
                 <span className="text-[11px] font-bold uppercase tracking-[0.2em] text-white/35">Research Topic</span>
                 <input
@@ -305,39 +293,16 @@ const WikiBuilderView: React.FC<WikiBuilderViewProps> = ({
                   <div className="mt-1 text-[11px] uppercase tracking-[0.16em] text-white/30">{selectedWikiId}</div>
                 </div>
               </div>
-              <label className="space-y-2">
-                <span className="text-[11px] font-bold uppercase tracking-[0.2em] text-white/35">SearXNG URL</span>
-                <input
-                  type="text"
-                  value={searxngUrl}
-                  onChange={(event) => setSearxngUrl(event.target.value)}
-                  placeholder="http://localhost:8080"
-                  className="w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white outline-none transition-colors focus:border-sky-400/40"
-                  disabled={isRunning}
-                />
-              </label>
-              <label className="space-y-2">
-                <span className="text-[11px] font-bold uppercase tracking-[0.2em] text-white/35">Fallback Search API</span>
-                <input
-                  type="text"
-                  value={searchApiUrl}
-                  onChange={(event) => setSearchApiUrl(event.target.value)}
-                  placeholder="Optional JSON search endpoint"
-                  className="w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white outline-none transition-colors focus:border-sky-400/40"
-                  disabled={isRunning}
-                />
-              </label>
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
               <button
                 onClick={handleRun}
                 disabled={isRunning}
-                className={`inline-flex items-center space-x-2 rounded-2xl px-5 py-3 text-sm font-bold transition-all ${
-                  isRunning
-                    ? 'cursor-not-allowed bg-white/10 text-white/30'
-                    : 'bg-sky-400 text-slate-950 shadow-[0_10px_40px_rgba(56,189,248,0.25)] hover:-translate-y-0.5'
-                }`}
+                className={`inline-flex items-center space-x-2 rounded-2xl px-5 py-3 text-sm font-bold transition-all ${isRunning
+                  ? 'cursor-not-allowed bg-white/10 text-white/30'
+                  : 'bg-sky-400 text-slate-950 shadow-[0_10px_40px_rgba(56,189,248,0.25)] hover:-translate-y-0.5'
+                  }`}
               >
                 {isRunning ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
                 <span>{isRunning ? 'Researching Topic...' : 'Run Wiki Builder'}</span>
@@ -421,17 +386,17 @@ const WikiBuilderView: React.FC<WikiBuilderViewProps> = ({
         </div>
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
-        <div className="space-y-6">
+      <section className="space-y-6">
+        <div>
           <div className="rounded-[1.75rem] border border-white/10 bg-[#0a0c12]/85 p-6">
             <div className="flex items-center justify-between">
               <div>
-                <h3 className="text-lg font-bold text-white">Pipeline Map</h3>
-                <p className="text-sm text-white/40">Watch each stage lock into place as this wiki materializes.</p>
+                <h3 className="text-lg font-bold text-white">Pipeline Status</h3>
+                {/* <p className="text-sm text-white/40">Watch each stage lock into place as this wiki materializes.</p> */}
               </div>
-              {isRunning ? <LoaderCircle className="h-5 w-5 animate-spin text-sky-300" /> : <CheckCircle2 className="h-5 w-5 text-emerald-300/80" />}
+              {isRunning ? <LoaderCircle className="h-5 w-5 animate-spin text-sky-300" /> : <CheckCircle2 className="h-0 w-0 text-emerald-300/80" />}
             </div>
-            <div className="mt-6 space-y-3">
+            <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-5">
               {STAGES.map((stage, index) => {
                 const state =
                   progressEvent?.status === 'success'
@@ -445,43 +410,44 @@ const WikiBuilderView: React.FC<WikiBuilderViewProps> = ({
                 return (
                   <div
                     key={stage.key}
-                    className={`rounded-2xl border px-4 py-4 transition-all ${
-                      state === 'done'
-                        ? 'border-emerald-300/15 bg-emerald-300/10'
-                        : state === 'active'
-                          ? 'border-sky-300/20 bg-sky-300/10'
-                          : 'border-white/5 bg-white/[0.03]'
-                    }`}
+                    className={`group relative rounded-xl border px-3 py-3 transition-all ${state === 'done'
+                      ? 'border-emerald-300/15 bg-emerald-300/10'
+                      : state === 'active'
+                        ? 'border-sky-300/20 bg-sky-300/10'
+                        : 'border-white/5 bg-white/[0.03]'
+                      }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-3">
-                        <div
-                          className={`flex h-8 w-8 items-center justify-center rounded-xl text-xs font-black ${
-                            state === 'done'
-                              ? 'bg-emerald-300/20 text-emerald-100'
-                              : state === 'active'
-                                ? 'bg-sky-300/20 text-sky-100'
-                                : 'bg-white/10 text-white/35'
+                    <div className="flex items-center space-x-3">
+                      <div
+                        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-[10px] font-black ${state === 'done'
+                          ? 'bg-emerald-300/20 text-emerald-100'
+                          : state === 'active'
+                            ? 'bg-sky-300/20 text-sky-100'
+                            : 'bg-white/10 text-white/35'
                           }`}
-                        >
-                          {index + 1}
-                        </div>
-                        <div>
-                          <p className="text-sm font-semibold text-white">{stage.label}</p>
-                          <p className="text-xs text-white/45">{stage.description}</p>
-                        </div>
-                      </div>
-                      <span
-                        className={`text-[10px] font-bold uppercase tracking-[0.2em] ${
-                          state === 'done'
-                            ? 'text-emerald-100/80'
-                            : state === 'active'
-                              ? 'text-sky-100/80'
-                              : 'text-white/25'
-                        }`}
                       >
-                        {state === 'done' ? 'Done' : state === 'active' ? 'Active' : 'Pending'}
-                      </span>
+                        {index + 1}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-1">
+                          <p className="truncate text-xs font-bold text-white">{stage.label}</p>
+                          <button
+                            type="button"
+                            className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/40 transition hover:border-white/20 hover:text-white"
+                            aria-label={`About ${stage.label}`}
+                          >
+                            <Info className="h-2.5 w-2.5" />
+                          </button>
+                        </div>
+                        <p className={`text-[9px] font-bold uppercase tracking-wider ${state === 'done' ? 'text-emerald-400/60' : state === 'active' ? 'text-sky-400/60' : 'text-white/20'}`}>
+                          {state === 'done' ? 'Done' : state === 'active' ? 'Active' : ''}
+                        </p>
+                      </div>
+                    </div>
+                    {/* Floating tooltip panel — same pattern as "About this view" */}
+                    <div className="pointer-events-none absolute bottom-full left-0 z-50 mb-2 hidden w-56 rounded-2xl border border-white/10 bg-[#0a0c12]/95 p-4 text-left shadow-2xl group-hover:block">
+                      <p className="text-xs font-bold uppercase tracking-[0.18em] text-white/35">Stage {index + 1}</p>
+                      <p className="mt-2 text-sm leading-6 text-white/70">{stage.description}</p>
                     </div>
                   </div>
                 );
@@ -519,7 +485,7 @@ const WikiBuilderView: React.FC<WikiBuilderViewProps> = ({
           </div>
         </div>
 
-        <div className="space-y-6">
+        <div>
           <div className="rounded-[1.75rem] border border-white/10 bg-[#0a0c12]/85 p-6">
             <div className="flex items-center justify-between">
               <div>
@@ -532,7 +498,7 @@ const WikiBuilderView: React.FC<WikiBuilderViewProps> = ({
               </div>
             </div>
 
-            <div className="mt-6 grid gap-4 lg:grid-cols-[0.34fr_0.66fr]">
+            <div className="mt-6 grid gap-4 lg:grid-cols-[280px_1fr] min-w-0">
               <div className="space-y-4">
                 <div className="rounded-2xl border border-white/5 bg-white/[0.03] p-3">
                   <div className="grid grid-cols-3 gap-2 text-xs">
@@ -550,9 +516,8 @@ const WikiBuilderView: React.FC<WikiBuilderViewProps> = ({
                           }
                           setSelectedKind(tab.key as 'wiki' | 'source');
                         }}
-                        className={`rounded-xl px-3 py-2 font-semibold transition-all ${
-                          selectedKind === tab.key ? 'bg-white/10 text-white' : 'text-white/40 hover:bg-white/5 hover:text-white/70'
-                        }`}
+                        className={`rounded-xl px-3 py-2 font-semibold transition-all ${selectedKind === tab.key ? 'bg-white/10 text-white' : 'text-white/40 hover:bg-white/5 hover:text-white/70'
+                          }`}
                       >
                         {tab.label}
                       </button>
@@ -566,11 +531,10 @@ const WikiBuilderView: React.FC<WikiBuilderViewProps> = ({
                       <button
                         key={item.name}
                         onClick={() => void loadContent('wiki', item.name)}
-                        className={`w-full rounded-2xl border px-4 py-3 text-left transition-all ${
-                          selectedName === item.name && selectedKind === 'wiki'
-                            ? 'border-sky-300/20 bg-sky-300/10 text-white'
-                            : 'border-white/5 bg-white/[0.03] text-white/65 hover:bg-white/5 hover:text-white'
-                        }`}
+                        className={`w-full rounded-2xl border px-4 py-3 text-left transition-all ${selectedName === item.name && selectedKind === 'wiki'
+                          ? 'border-sky-300/20 bg-sky-300/10 text-white'
+                          : 'border-white/5 bg-white/[0.03] text-white/65 hover:bg-white/5 hover:text-white'
+                          }`}
                       >
                         <p className="text-sm font-semibold">{item.title}</p>
                         <p className="mt-1 truncate text-xs text-white/30">{item.name}</p>
@@ -581,11 +545,10 @@ const WikiBuilderView: React.FC<WikiBuilderViewProps> = ({
                       <button
                         key={item.name}
                         onClick={() => void loadContent('source', item.name)}
-                        className={`w-full rounded-2xl border px-4 py-3 text-left transition-all ${
-                          selectedName === item.name && selectedKind === 'source'
-                            ? 'border-sky-300/20 bg-sky-300/10 text-white'
-                            : 'border-white/5 bg-white/[0.03] text-white/65 hover:bg-white/5 hover:text-white'
-                        }`}
+                        className={`w-full rounded-2xl border px-4 py-3 text-left transition-all ${selectedName === item.name && selectedKind === 'source'
+                          ? 'border-sky-300/20 bg-sky-300/10 text-white'
+                          : 'border-white/5 bg-white/[0.03] text-white/65 hover:bg-white/5 hover:text-white'
+                          }`}
                       >
                         <p className="text-sm font-semibold">{item.title}</p>
                         <p className="mt-1 line-clamp-2 text-xs text-white/35">{item.snippet}</p>
@@ -599,14 +562,14 @@ const WikiBuilderView: React.FC<WikiBuilderViewProps> = ({
                 </div>
               </div>
 
-              <div className="min-h-[500px] rounded-[1.5rem] border border-white/10 bg-black/20 p-6">
+              <div className="min-h-[500px] min-w-0 overflow-hidden rounded-[1.5rem] border border-white/10 bg-black/20 p-6">
                 <div className="mb-5 flex items-center justify-between">
                   <div>
                     <h4 className="text-lg font-bold text-white">{previewTitle}</h4>
                     <p className="text-xs text-white/35">{selectedKind === 'source' ? 'Source Note' : selectedKind === 'wiki' ? 'Concept Page' : 'Pipeline Output'}</p>
                   </div>
                 </div>
-                <div className="prose prose-invert max-w-none text-sm prose-p:text-white/75 prose-a:text-sky-300 prose-headings:text-white">
+                <div className="prose prose-invert max-w-none min-w-0 overflow-x-hidden text-sm prose-p:text-white/75 prose-a:text-sky-300 prose-headings:text-white">
                   {previewContent ? (
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}

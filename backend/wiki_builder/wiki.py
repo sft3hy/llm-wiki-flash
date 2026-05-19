@@ -53,7 +53,7 @@ LOW_VALUE_TOKENS = {
     "answers",
 }
 BAD_EDGE_TOKENS = {"website", "remarkable", "first", "last", "built", "today", "past", "years", "year", "ago"}
-SYSTEM_PAGES = {"index.md", "log.md", "SCHEMA.md"}
+SYSTEM_PAGES = {"index.md", "log.md", "SCHEMA.md", "purpose.md"}
 SENTENCE_NOISE_MARKERS = (
     "under construction",
     "to the sister website",
@@ -155,6 +155,7 @@ class WikiGenerator:
                     "Return only a JSON array of 4 to 8 kebab-case slugs.\n"
                     "Prefer enduring topics, places, systems, engineering concepts, and named aqueducts.\n"
                     "Exclude website names, source brands, citation fragments, adjectives, time phrases, and navigation text.\n"
+                    "CRITICAL: Each concept slug must be uniquely and individually named. Even if sources share a name, ensure the concept title is highly specific to prevent naming collisions.\n"
                     "The first slug must be the main topic slug if it is appropriate."
                 )
             ),
@@ -361,6 +362,20 @@ class WikiGenerator:
     def write_wiki(self, topic: str, sources: list[FetchedSource], workspace_id: str | None = None) -> list[Path]:
         topic_root = ensure_directory(self.vault_path / (workspace_id or slugify(topic)))
         wiki_dir = ensure_directory(topic_root / "wiki")
+        
+        purpose_path = wiki_dir / "purpose.md"
+        if purpose_path.exists() and "Defines goals, key questions" in purpose_path.read_text(encoding="utf-8"):
+            source_lines = "\n".join(f"- {s.title}: {s.snippet}" for s in sources[:5])
+            messages = [
+                SystemMessage(content="You are defining the core purpose and thesis for a new local knowledge base."),
+                HumanMessage(content=f"Topic: {topic}\nSources Context:\n{source_lines}\n\nDraft a concise 2-paragraph purpose statement defining the goals, key questions, and research scope for this wiki. Output ONLY the markdown text, starting with a # Wiki Purpose header.")
+            ]
+            try:
+                response = call_sync_with_fallback(messages, "wiki-purpose-draft", model_id=self.model_id)
+                if response:
+                    purpose_path.write_text(response.strip(), encoding="utf-8")
+            except Exception:
+                pass
         concept_slugs = self.extract_concepts(topic, sources)
         for existing_page in wiki_dir.glob("*.md"):
             if existing_page.name in SYSTEM_PAGES:

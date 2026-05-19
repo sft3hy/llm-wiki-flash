@@ -65,14 +65,16 @@ def _serialize_messages(messages: list[Any]) -> list[dict[str, str]]:
     return serialized
 
 
-def _build_payload(messages: list[Any], model_id: Optional[str] = None) -> dict[str, Any]:
+def _build_payload(
+    messages: list[Any], model_id: Optional[str] = None
+) -> dict[str, Any]:
     return {
         "model": _resolve_model_id(model_id),
         "messages": _serialize_messages(messages),
         "stream": False,
         "options": {
-            "num_ctx": 4096,
-            "num_predict": 1024,
+            "num_ctx": 16384,
+            "num_predict": 4096,
             "temperature": 0.1,
             "repeat_penalty": 1.15,
             "stop": STOP_TOKENS,
@@ -93,10 +95,14 @@ def _post_chat(payload: dict[str, Any]) -> str:
     except urllib.error.HTTPError as exc:
         details = exc.read().decode("utf-8", errors="replace")
         logger.error("❌ Ollama chat HTTP error: %s", details)
-        raise RuntimeError(f"Ollama chat request failed ({exc.code}): {details}") from exc
+        raise RuntimeError(
+            f"Ollama chat request failed ({exc.code}): {details}"
+        ) from exc
     except urllib.error.URLError as exc:
         logger.error("❌ Ollama chat connection error: %s", exc)
-        raise RuntimeError(f"Could not connect to Ollama at {settings.OLLAMA_BASE_URL}") from exc
+        raise RuntimeError(
+            f"Could not connect to Ollama at {settings.OLLAMA_BASE_URL}"
+        ) from exc
 
     message = body.get("message", {}) if isinstance(body, dict) else {}
     content = message.get("content", "")
@@ -109,16 +115,34 @@ class SimpleLLMClient:
 
     async def ainvoke(self, messages: list[Any]) -> SimpleLLMResponse:
         async with ASYNC_LLM_SEMAPHORE:
-            logger.info("🤖 queued local chat start model=%s messages=%s", self.model_id, len(messages))
-            content = await asyncio.to_thread(_post_chat, _build_payload(messages, self.model_id))
-            logger.info("🤖 queued local chat finish model=%s chars=%s", self.model_id, len(content))
+            logger.info(
+                "🤖 queued local chat start model=%s messages=%s",
+                self.model_id,
+                len(messages),
+            )
+            content = await asyncio.to_thread(
+                _post_chat, _build_payload(messages, self.model_id)
+            )
+            logger.info(
+                "🤖 queued local chat finish model=%s chars=%s",
+                self.model_id,
+                len(content),
+            )
         return SimpleLLMResponse(content=content)
 
     def invoke(self, messages: list[Any]) -> SimpleLLMResponse:
         with SYNC_LLM_LOCK:
-            logger.info("🤖 sync local chat start model=%s messages=%s", self.model_id, len(messages))
+            logger.info(
+                "🤖 sync local chat start model=%s messages=%s",
+                self.model_id,
+                len(messages),
+            )
             content = _post_chat(_build_payload(messages, self.model_id))
-            logger.info("🤖 sync local chat finish model=%s chars=%s", self.model_id, len(content))
+            logger.info(
+                "🤖 sync local chat finish model=%s chars=%s",
+                self.model_id,
+                len(content),
+            )
         return SimpleLLMResponse(content=content)
 
 

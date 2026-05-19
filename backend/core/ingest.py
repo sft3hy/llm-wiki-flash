@@ -1,7 +1,7 @@
 import os
 import re
 import hashlib
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 import yaml
 import json
 from datetime import datetime
@@ -19,6 +19,7 @@ from core.schema import (
 )
 from utils.git_manager import GitManager
 from utils.progress import progress_manager
+import ingest_db
 import logging
 from core.query import QueryEngine
 
@@ -30,11 +31,13 @@ logging.basicConfig(
 logger = logging.getLogger("llm-wiki")
 
 class IngestEngine:
-    def __init__(self, raw_dir: str, wiki_dir: str, model_id: str = None, embeddings_dir: str = None):
+    def __init__(self, raw_dir: str, wiki_dir: str, model_id: str = None,
+                 embeddings_dir: str = None, wiki_id: str = None):
         self.raw_dir = raw_dir
         self.wiki_dir = wiki_dir
         self.model_id = model_id
         self.embeddings_dir = embeddings_dir
+        self.wiki_id = wiki_id or "default"
         os.makedirs(raw_dir, exist_ok=True)
         os.makedirs(wiki_dir, exist_ok=True)
         if embeddings_dir:
@@ -44,30 +47,24 @@ class IngestEngine:
         self.splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=150)
         self.query_engine = QueryEngine(wiki_dir, embeddings_dir=embeddings_dir)
 
+    # ─── Logging & Progress ────────────────────────────────────────────
+
     def _log_step_event(self, stage: str, step: str, status: str, **context):
         payload = {
-            "stage": stage,
-            "step": step,
-            "status": status,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            **context,
+            "stage": stage, "step": step, "status": status,
+            "timestamp": datetime.utcnow().isoformat() + "Z", **context,
         }
         logger.info(json.dumps(payload, default=str))
 
     def _emit_progress(self, message: str, progress: int, stage: str, step: str, **context):
-        progress_manager.broadcast(
-            message,
-            progress,
-            "processing",
-            stage=stage,
-            step=step,
-            **context,
-        )
+        progress_manager.broadcast(message, progress, "processing", stage=stage, step=step, **context)
 
     def _progress_percent(self, completed_steps: int, total_steps: int) -> int:
         if total_steps <= 0:
             return 0
         return max(1, min(99, int((completed_steps / total_steps) * 100)))
+
+    # ─── LLM ───────────────────────────────────────────────────────────
 
     async def _call_llm(self, messages: list, task_type: str) -> str:
         logger.info(f"  🤖 Calling LLM for task: {task_type} (model: {self.model_id})")
@@ -83,10 +80,13 @@ class IngestEngine:
         logger.debug(f"  📄 LLM output preview: {result[:200]}")
         return result
 
+    # ─── Wiki Helpers ──────────────────────────────────────────────────
+
     def _get_existing_pages(self) -> List[str]:
         if not os.path.exists(self.wiki_dir):
             return []
-        return [f for f in os.listdir(self.wiki_dir) if f.endswith(".md") and f not in ("SCHEMA.md",)]
+        system_pages = {"SCHEMA.md", "purpose.md", "index.md", "log.md"}
+        return [f for f in os.listdir(self.wiki_dir) if f.endswith(".md") and f not in system_pages]
 
     def _read_wiki_page(self, filename: str) -> str:
         path = os.path.join(self.wiki_dir, filename)
@@ -100,119 +100,88 @@ class IngestEngine:
         with open(path, "w") as f:
             f.write(content)
 
+    # ─── Content Processing ────────────────────────────────────────────
+
     async def _generate_summary(self, content: str) -> str:
         """Generate a short summary of a single document."""
         content_len = len(content)
         if content_len < 200:
-            logger.info(f"    📋 Content too short ({content_len} chars), using raw text as summary")
             return content
-        
-        # Use more content for the summary if available
         truncated = content[:6000]
         prompt = CORPUS_SUMMARY_PROMPT.format(content=truncated)
         messages = [HumanMessage(content=prompt)]
         summary = await self._call_llm(messages, "summarization")
         if not summary:
-            logger.warning(f"    ⚠️ Summary generation returned empty, using first 1000 chars as fallback")
             return content[:1000]
-        logger.info(f"    📋 Generated summary: {summary[:100]}...")
         return summary
 
     def _parse_concepts_from_text(self, result: str) -> List[Dict[str, str]]:
         """Try to parse a JSON concept list from raw LLM output."""
         if not result or not result.strip():
-            logger.error("  ❌ Cannot parse concepts from empty result")
             return []
-
-        # Strip markdown code fences if present
         cleaned = result.strip()
         if cleaned.startswith('```'):
-            # Remove opening fence (```json or ```)
             first_newline = cleaned.find('\n')
             if first_newline != -1:
                 cleaned = cleaned[first_newline + 1:]
-            # Remove closing fence
             if cleaned.rstrip().endswith('```'):
                 cleaned = cleaned.rstrip()[:-3].rstrip()
-
-        # Find JSON array
         start = cleaned.find('[')
         end = cleaned.rfind(']') + 1
         if start == -1 or end == 0:
             logger.error(f"  ❌ No JSON array found in LLM output. Full output:\n{result}")
             return []
-
         json_str = cleaned[start:end]
         try:
             concepts = json.loads(json_str)
         except json.JSONDecodeError as e:
             logger.error(f"  ❌ JSON parse error: {e}\n  Raw JSON string: {json_str[:500]}")
             return []
-
-        # Filter and normalize
         valid = [c for c in concepts if isinstance(c, dict) and 'name' in c]
         for c in valid:
             c['name'] = c['name'].lower().replace(" ", "-")
             c['name'] = re.sub(r'[^a-z0-9\-]', '', c['name'])
-        
         logger.info(f"  ✅ Parsed {len(valid)} valid concepts: {[c['name'] for c in valid]}")
         return valid
 
     async def _extract_global_concepts(self, topic: str, source_summaries: str) -> List[Dict[str, str]]:
         """Extract a global list of concepts from the combined document summaries."""
-        logger.info(f"  📊 Summaries length: {len(source_summaries)} chars")
-        logger.info(f"  📊 Summaries preview: {source_summaries[:300]}...")
-
-        prompt = CONCEPT_EXTRACTION_PROMPT.format(
-            topic=topic,
-            source_summaries=source_summaries
-        )
+        purpose_content = self._read_wiki_page("purpose.md")
+        prompt = CONCEPT_EXTRACTION_PROMPT.format(topic=topic, source_summaries=source_summaries)
         messages = [HumanMessage(content=prompt)]
+        if purpose_content:
+            messages.insert(0, SystemMessage(content=f"WIKI PURPOSE & DIRECTION:\n{purpose_content}\n\nAlign all concept extraction with the above purpose."))
         result = await self._call_llm(messages, "concept-extraction")
-        
-        logger.info(f"  📊 Raw concept extraction output ({len(result)} chars):\n{result}")
-
         concepts = self._parse_concepts_from_text(result)
-
-        # Retry once if parsing failed
         if not concepts:
             logger.warning("  🔄 First attempt failed to extract concepts, retrying...")
             result = await self._call_llm(messages, "concept-extraction-retry")
-            logger.info(f"  📊 Retry output ({len(result)} chars):\n{result}")
             concepts = self._parse_concepts_from_text(result)
-
         return concepts
 
     async def _synthesize_concept_article(self, concept: Dict[str, str]) -> str:
         """Write a standalone article for a specific concept using RAG."""
         filename = f"{concept['name']}.md"
         existing_content = self._read_wiki_page(filename)
-
-        if existing_content:
-            existing_content_section = f"EXISTING PAGE CONTENT (preserve and integrate):\n{existing_content}"
-            logger.info(f"    📄 Found existing page for {concept['name']} ({len(existing_content)} chars)")
-        else:
-            existing_content_section = ""
-
-        # Retrieve relevant context from ChromaDB
+        existing_content_section = f"EXISTING PAGE CONTENT (preserve and integrate):\n{existing_content}" if existing_content else ""
         query = f"{concept['name'].replace('-', ' ')} {concept.get('description', '')}"
-        logger.info(f"    🔎 RAG query: {query[:100]}")
         retrieved_context = await self.query_engine.search(query, k=8)
         if not retrieved_context:
-            logger.warning(f"    ⚠️ No RAG results for concept: {concept['name']}")
             retrieved_context = "No specific details found in the provided sources."
-        else:
-            logger.info(f"    🔎 RAG returned {len(retrieved_context)} chars of context")
-
+        index_content = self._read_wiki_page("index.md")
+        purpose_content = self._read_wiki_page("purpose.md")
+        system_content = COMPILER_SYSTEM_PROMPT
+        if purpose_content:
+            system_content += f"\n\nWIKI PURPOSE & DIRECTION:\n{purpose_content}\n\nAlign all synthesis with the above purpose."
         messages = [
-            SystemMessage(content=COMPILER_SYSTEM_PROMPT),
+            SystemMessage(content=system_content),
             HumanMessage(content=CONCEPT_ARTICLE_PROMPT.format(
                 concept_name=concept["name"].replace("-", " ").title(),
                 retrieved_context=retrieved_context,
-                existing_content_section=existing_content_section
+                existing_content_section=existing_content_section,
+                index_content=index_content if index_content else "None (Wiki is currently empty)"
             ))
         ]
-
         return await self._call_llm(messages, "article-writing")
 
     def _update_index(self, touched_pages: List[str] = None):
@@ -220,22 +189,12 @@ class IngestEngine:
         all_pages = self._get_existing_pages()
         lines = ["# Wiki Index\n", "## Map of Content\n"]
         touched = set(touched_pages or [])
-
         for page in sorted(all_pages):
-            if page in ("index.md", "log.md", "SCHEMA.md"): continue
+            if page in ("index.md", "log.md", "SCHEMA.md", "purpose.md"): continue
             content = self._read_wiki_page(page)
             title = page.replace(".md", "").replace("-", " ").title()
-            try:
-                if content.startswith("---"):
-                    fm_end = content.index("---", 3)
-                    fm = yaml.safe_load(content[3:fm_end])
-                    if fm and isinstance(fm, dict): title = fm.get("title", title)
-            except:
-                pass
-
             marker = " ✨" if page.replace(".md", "") in touched else ""
             lines.append(f"- [[{page.replace('.md', '')}]] — {title}{marker}\n")
-
         with open(index_path, "w") as f:
             f.writelines(lines)
 
@@ -244,7 +203,6 @@ class IngestEngine:
         if not os.path.exists(log_path):
             with open(log_path, "w") as f:
                 f.write("# Compilation Log\n\n")
-
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         created_str = ", ".join(f"[[{c}]]" for c in created) if created else "none"
         updated_str = ", ".join(f"[[{u}]]" for u in updated) if updated else "none"
@@ -252,291 +210,286 @@ class IngestEngine:
         with open(log_path, "a") as f:
             f.write(entry)
 
-    async def process_corpus(self, topic: str, documents: List[Dict[str, str]]) -> Dict:
+    async def _auto_draft_purpose(self, topic: str, summaries: List[str]):
+        """Draft a contextual purpose.md if it's currently empty/boilerplate."""
+        purpose_content = self._read_wiki_page("purpose.md")
+        # Check if empty or contains the default boilerplate
+        if not purpose_content.strip() or "Defines goals, key questions" in purpose_content:
+            logger.info("  📝 Drafting contextual purpose.md...")
+            context = "\n".join(summaries[:5])
+            messages = [
+                SystemMessage(content="You are defining the core purpose and research thesis for a new local knowledge base."),
+                HumanMessage(content=f"Topic: {topic}\nSource Context:\n{context}\n\nDraft a concise 2-paragraph purpose statement defining the goals, key questions, and research scope for this wiki. Output ONLY the markdown text, starting with a # Wiki Purpose header.")
+            ]
+            response = await self._call_llm(messages, "purpose-draft")
+            if response:
+                self._write_wiki_page("purpose.md", response.strip())
+                logger.info("  ✅ Drafted purpose.md")
+
+    # ─── SHA256 Hashing ────────────────────────────────────────────────
+
+    @staticmethod
+    def _sha256(content: str) -> str:
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _extract_folder_context(filename: str) -> list[str]:
+        """Extract folder hierarchy from a filename like 'papers-energy-grid.md'."""
+        parts = filename.replace("/", "-").split("-")
+        return parts[:-1] if len(parts) > 1 else []
+
+    # ─── Queue-Based Entry Point ───────────────────────────────────────
+
+    def enqueue_documents(self, topic: str, documents: List[Dict[str, str]],
+                          force: bool = False) -> Dict:
         """
-        Process a full corpus of documents (from folder, vault, or clippings).
-        documents: List of dicts with 'filename', 'content', 'source_type'
+        Hash, cache-check, and enqueue documents for processing.
+        Returns { queued, skipped, task_ids }.
+        """
+        queued = 0
+        skipped = 0
+        task_ids = []
+
+        for doc in documents:
+            content = doc["content"]
+            filename = doc["filename"]
+            sha = self._sha256(content)
+
+            # Cache check — skip unchanged files
+            if not force and ingest_db.check_cache(self.wiki_id, filename, sha):
+                logger.info(f"  ⏭️ Cache hit (unchanged): {filename}")
+                skipped += 1
+                continue
+
+            # Save raw file
+            raw_path = os.path.join(self.raw_dir, filename)
+            os.makedirs(os.path.dirname(raw_path), exist_ok=True)
+            with open(raw_path, "w") as f:
+                f.write(content)
+
+            folder_context = self._extract_folder_context(filename)
+            task_id = ingest_db.enqueue_task(
+                wiki_id=self.wiki_id,
+                filename=filename,
+                source_path=raw_path,
+                topic=topic,
+                model_id=self.model_id,
+                folder_context=folder_context,
+            )
+            task_ids.append(task_id)
+            queued += 1
+            logger.info(f"  📥 Queued: {filename} (task={task_id[:8]})")
+
+        return {"queued": queued, "skipped": skipped, "task_ids": task_ids}
+
+    # ─── Queue Processor ───────────────────────────────────────────────
+
+    async def process_queue(self, topic: str) -> Dict:
+        """
+        Process all pending tasks in the queue for this wiki.
+        Runs serialized — one task at a time with retry support.
         """
         started_at = perf_counter()
-        logger.info(f"🚀 Starting corpus ingestion for topic: '{topic}' with {len(documents)} docs.")
-        for i, doc in enumerate(documents):
-            logger.info(f"  📄 Doc {i+1}: {doc['filename']} ({len(doc['content'])} chars, type={doc.get('source_type', '?')})")
-        self._log_step_event("ingest", "initialize", "start", topic=topic, total_documents=len(documents))
-        progress_manager.broadcast(
-            "Initializing corpus ingestion",
-            2,
-            "processing",
-            stage="initialize",
-            step="bootstrap",
-            total_documents=len(documents),
-            topic=topic,
-        )
+        all_created = []
+        all_updated = []
+        tasks_completed = 0
+        tasks_failed = 0
 
-        # 1. Normalize, Save, and Embed
+        pending = ingest_db.get_pending_tasks(self.wiki_id)
+        if not pending:
+            return {"status": "success", "message": "No pending tasks.", "tasks_completed": 0}
+
+        total_tasks = len(pending)
+        logger.info(f"🚀 Processing queue: {total_tasks} pending tasks for wiki={self.wiki_id}")
+
+        # Phase 1: Process each document — summarize, embed raw chunks
         all_summaries = []
-        seen_hashes = set()
-        processed_documents = 0
-        document_stage_steps = 4
-        total_steps = max(len(documents), 1) * document_stage_steps + 3
-        completed_steps = 0
+        processed_filenames = []
 
-        for i, doc in enumerate(documents):
-            # Content-based deduplication
-            content_hash = hashlib.md5(doc['content'].encode()).hexdigest()
-            if content_hash in seen_hashes:
-                logger.info(f"  ⏭️ Skipping duplicate content: {doc['filename']}")
-                self._log_step_event(
-                    "document",
-                    "deduplicate",
-                    "skipped",
-                    topic=topic,
-                    document_name=doc["filename"],
-                    document_index=i + 1,
-                    total_documents=len(documents),
+        for task_idx, task in enumerate(pending):
+            task_id = task["id"]
+            filename = task["filename"]
+            source_path = task["source_path"]
+
+            try:
+                ingest_db.update_task_status(task_id, "processing")
+                self._emit_progress(
+                    f"Processing {task_idx+1}/{total_tasks}: {filename}",
+                    self._progress_percent(task_idx, total_tasks * 2),
+                    "document", "processing",
+                    document_name=filename, document_index=task_idx+1,
+                    total_documents=total_tasks, active_model=self.model_id,
                 )
+
+                # Read content
+                with open(source_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+
+                # Chunk & embed
+                chunks = self.splitter.split_text(content)
+                metadatas = [{"source": filename, "type": "source"} for _ in chunks]
+                self.query_engine.add_documents(chunks=chunks, metadatas=metadatas)
+                logger.info(f"  📦 Embedded {len(chunks)} chunks for {filename}")
+
+                # Summarize
+                summary = await self._generate_summary(content)
+                all_summaries.append(f"--- Source: {filename} ---\n{summary}")
+                processed_filenames.append(filename)
+
+                # Mark task as ready for synthesis (still processing)
+                ingest_db.update_task_status(task_id, "processing")
+
+            except Exception as e:
+                logger.error(f"  ❌ Task {task_id[:8]} failed: {e}")
+                retry_count = ingest_db.increment_retry(task_id)
+                if retry_count > ingest_db.MAX_RETRIES:
+                    ingest_db.update_task_status(task_id, "failed", error=str(e))
+                    tasks_failed += 1
                 continue
-            seen_hashes.add(content_hash)
-            processed_documents += 1
-            logger.info(f"\n{'='*60}")
-            logger.info(f"📂 Processing document {i+1}/{len(documents)}: {doc['filename']}")
-            logger.info(f"{'='*60}")
 
-            doc_context = {
-                "topic": topic,
-                "document_name": doc["filename"],
-                "document_index": i + 1,
-                "total_documents": len(documents),
-                "active_model": self.model_id,
-            }
+        if not all_summaries:
+            # All tasks failed during document phase
+            for task in pending:
+                if task["status"] == "processing":
+                    ingest_db.update_task_status(task["id"], "failed", error="No summaries generated")
+            return {"status": "error", "message": "All documents failed processing.", "tasks_failed": tasks_failed}
 
-            # Save raw
-            self._log_step_event("document", "load_document", "start", **doc_context)
-            self._emit_progress(
-                f"Loading document {i+1} of {len(documents)}: {doc['filename']}",
-                self._progress_percent(completed_steps, total_steps),
-                "document",
-                "load_document",
-                **doc_context,
-            )
-            step_started = perf_counter()
-            raw_path = os.path.join(self.raw_dir, doc['filename'])
-            with open(raw_path, "w") as f:
-                f.write(doc['content'])
-            logger.info(f"  💾 Saved raw file to: {raw_path}")
-            completed_steps += 1
-            self._log_step_event(
-                "document",
-                "load_document",
-                "success",
-                duration_ms=round((perf_counter() - step_started) * 1000, 2),
-                **doc_context,
-            )
-
-            # Chunk
-            self._log_step_event("document", "chunk_document", "start", **doc_context)
-            self._emit_progress(
-                f"Chunking document {i+1} of {len(documents)}",
-                self._progress_percent(completed_steps, total_steps),
-                "document",
-                "chunk_document",
-                **doc_context,
-            )
-            step_started = perf_counter()
-            chunks = self.splitter.split_text(doc['content'])
-            logger.info(f"  🧩 Split into {len(chunks)} chunks")
-            completed_steps += 1
-            self._log_step_event(
-                "document",
-                "chunk_document",
-                "success",
-                chunk_count=len(chunks),
-                duration_ms=round((perf_counter() - step_started) * 1000, 2),
-                **doc_context,
-            )
-
-            # Embed in Chroma
-            self._log_step_event("document", "generate_embeddings", "start", chunk_count=len(chunks), **doc_context)
-            self._emit_progress(
-                f"Generating embeddings for document {i+1} of {len(documents)}",
-                self._progress_percent(completed_steps, total_steps),
-                "document",
-                "generate_embeddings",
-                chunk_count=len(chunks),
-                **doc_context,
-            )
-            step_started = perf_counter()
-            metadatas = [{"source": doc['filename'], "type": doc.get('source_type', 'upload')} for _ in chunks]
-            self.query_engine.add_documents(chunks=chunks, metadatas=metadatas)
-            logger.info(f"  📦 Embedded {len(chunks)} chunks into ChromaDB")
-            completed_steps += 1
-            self._log_step_event(
-                "document",
-                "generate_embeddings",
-                "success",
-                chunk_count=len(chunks),
-                duration_ms=round((perf_counter() - step_started) * 1000, 2),
-                **doc_context,
-            )
-
-            # Summarize
-            self._log_step_event("document", "summarize_document", "start", **doc_context)
-            self._emit_progress(
-                f"Summarizing document {i+1} of {len(documents)}",
-                self._progress_percent(completed_steps, total_steps),
-                "document",
-                "summarize_document",
-                **doc_context,
-            )
-            step_started = perf_counter()
-            summary = await self._generate_summary(doc['content'])
-            all_summaries.append(f"--- Source: {doc['filename']} ---\n{summary}")
-            completed_steps += 1
-            self._log_step_event(
-                "document",
-                "summarize_document",
-                "success",
-                summary_chars=len(summary),
-                duration_ms=round((perf_counter() - step_started) * 1000, 2),
-                **doc_context,
-            )
-
-        # 2. Extract Global Concepts
-        logger.info(f"\n{'='*60}")
-        logger.info(f"🔍 CONCEPT EXTRACTION PHASE")
-        logger.info(f"{'='*60}")
-        self._log_step_event("concepts", "extract_concepts", "start", topic=topic, processed_documents=processed_documents)
+        # Phase 2: Global concept extraction + article synthesis
         self._emit_progress(
-            "Building concept clusters from processed documents",
-            self._progress_percent(completed_steps, total_steps),
-            "concepts",
-            "extract_concepts",
-            topic=topic,
-            processed_documents=processed_documents,
-            total_documents=len(documents),
-        )
-        step_started = perf_counter()
-        combined_summaries = "\n\n".join(all_summaries)
-        logger.info(f"📊 Combined summaries ({len(combined_summaries)} chars):\n{combined_summaries[:500]}")
-        concepts = await self._extract_global_concepts(topic, combined_summaries)
-        completed_steps += 1
-        self._log_step_event(
-            "concepts",
-            "extract_concepts",
-            "success",
-            concept_count=len(concepts),
-            duration_ms=round((perf_counter() - step_started) * 1000, 2),
-            topic=topic,
-            processed_documents=processed_documents,
+            "Extracting concepts from all documents",
+            self._progress_percent(total_tasks, total_tasks * 2),
+            "concepts", "extract_concepts",
+            topic=topic, processed_documents=len(all_summaries),
         )
 
+        combined_summaries = "\n\n".join(all_summaries)
+        
+        # Auto-draft purpose if needed
+        await self._auto_draft_purpose(topic, all_summaries)
+
+        concepts = await self._extract_global_concepts(topic, combined_summaries)
         if not concepts:
-            logger.warning("⚠️ No concepts extracted even after retry. Falling back to generic topic concept.")
             concepts = [{"name": topic.lower().replace(" ", "-"), "description": f"Main entry for {topic}"}]
 
-        # 3. Write Concept Articles using RAG
+        # Write concept articles
         created_pages = []
         updated_pages = []
-        total_steps += len(concepts)
-        
+        total_write_steps = len(concepts)
+
         for i, concept in enumerate(concepts):
-            logger.info(f"📝 Writing article for concept: {concept['name']}")
-            concept_context = {
-                "topic": topic,
-                "concept_name": concept["name"],
-                "concept_index": i + 1,
-                "total_concepts": len(concepts),
-                "active_model": self.model_id,
-            }
-            self._log_step_event("wiki", "write_page", "start", **concept_context)
             self._emit_progress(
-                f"Writing wiki page {i+1} of {len(concepts)}: {concept['name']}",
-                self._progress_percent(completed_steps, total_steps),
-                "wiki",
-                "write_page",
-                **concept_context,
+                f"Writing wiki page {i+1}/{total_write_steps}: {concept['name']}",
+                self._progress_percent(total_tasks + i, total_tasks + total_write_steps),
+                "wiki", "write_page",
+                concept_name=concept["name"], concept_index=i+1,
+                total_concepts=total_write_steps, active_model=self.model_id,
             )
-            step_started = perf_counter()
+
             page_content = await self._synthesize_concept_article(concept)
             if page_content:
                 page_name = f"{concept['name']}.md"
                 existing = os.path.exists(os.path.join(self.wiki_dir, page_name))
                 self._write_wiki_page(page_name, page_content)
 
-                # Embed the new wiki page back into Chroma so it can be queried
+                # Embed generated page
                 page_chunks = self.splitter.split_text(page_content) or [page_content]
                 self.query_engine.add_documents(
                     chunks=page_chunks,
                     metadatas=[{"source": page_name, "type": "wiki_page"} for _ in page_chunks]
                 )
 
+                # Record traceability
+                for fn in processed_filenames:
+                    ingest_db.record_generated_page(self.wiki_id, page_name, fn)
+
                 if existing:
                     updated_pages.append(concept['name'])
                 else:
                     created_pages.append(concept['name'])
-            completed_steps += 1
-            self._log_step_event(
-                "wiki",
-                "write_page",
-                "success",
-                page_written=bool(page_content),
-                duration_ms=round((perf_counter() - step_started) * 1000, 2),
-                **concept_context,
-            )
-            
+
             if (i+1) % 5 == 0:
                 self._update_index(created_pages + updated_pages)
 
-        # 4. Finalize
-        self._log_step_event("finalize", "update_index_and_log", "start", topic=topic)
-        self._emit_progress(
-            "Writing index, log, and final wiki metadata",
-            self._progress_percent(completed_steps, total_steps),
-            "finalize",
-            "update_index_and_log",
-            topic=topic,
-            created_pages=len(created_pages),
-            updated_pages=len(updated_pages),
-        )
-        step_started = perf_counter()
+        # Finalize — update index, log, cache, and mark tasks complete
         self._update_index(created_pages + updated_pages)
         self._update_log(f"Corpus: {topic}", created_pages, updated_pages)
-        completed_steps += 1
-        self._log_step_event(
-            "finalize",
-            "update_index_and_log",
-            "success",
-            duration_ms=round((perf_counter() - step_started) * 1000, 2),
-            topic=topic,
-        )
+
+        generated_page_names = [f"{p}.md" for p in created_pages + updated_pages]
+        for task in pending:
+            task_id = task["id"]
+            filename = task["filename"]
+            if filename in processed_filenames:
+                # Read content for SHA
+                try:
+                    with open(task["source_path"], "r", encoding="utf-8") as f:
+                        content = f.read()
+                    sha = self._sha256(content)
+                    ingest_db.update_cache(self.wiki_id, filename, sha, generated_page_names)
+                except Exception:
+                    pass
+                ingest_db.update_task_status(task_id, "completed", result={
+                    "pages_created": created_pages,
+                    "pages_updated": updated_pages,
+                })
+                tasks_completed += 1
 
         if self.git_manager.commit_changes(f"Ingest Corpus: {topic} — {len(created_pages)} created, {len(updated_pages)} updated"):
             logger.info("  ✅ Changes committed")
 
-        summary_result = {
+        result = {
             "status": "success",
             "topic": topic,
-            "documents_processed": processed_documents,
+            "documents_processed": len(processed_filenames),
             "pages_created": created_pages,
             "pages_updated": updated_pages,
+            "tasks_completed": tasks_completed,
+            "tasks_failed": tasks_failed,
             "duration_ms": round((perf_counter() - started_at) * 1000, 2),
         }
 
-        self._log_step_event("ingest", "complete", "success", **summary_result)
         progress_manager.broadcast(
             f"Complete! {len(created_pages)} pages created or refreshed.",
-            100,
-            "success",
-            stage="complete",
-            step="done",
-            topic=topic,
-            documents_processed=processed_documents,
-            total_documents=len(documents),
-            pages_created=len(created_pages),
-            pages_updated=len(updated_pages),
-            duration_ms=summary_result["duration_ms"],
-            active_model=self.model_id,
+            100, "success", stage="complete", step="done",
+            topic=topic, documents_processed=len(processed_filenames),
+            pages_created=len(created_pages), pages_updated=len(updated_pages),
+            duration_ms=result["duration_ms"], active_model=self.model_id,
         )
-        return summary_result
+        return result
+
+    # ─── Legacy Convenience Wrapper ────────────────────────────────────
+
+    async def process_corpus(self, topic: str, documents: List[Dict[str, str]]) -> Dict:
+        """
+        Legacy entry point — enqueues documents and processes them immediately.
+        Preserves backward compatibility with existing /ingest and /meditate endpoints.
+        """
+        started_at = perf_counter()
+        logger.info(f"🚀 Starting corpus ingestion for topic: '{topic}' with {len(documents)} docs.")
+
+        # Enqueue with cache check
+        enqueue_result = self.enqueue_documents(topic, documents)
+        logger.info(f"  📊 Enqueue result: {enqueue_result['queued']} queued, {enqueue_result['skipped']} skipped")
+
+        if enqueue_result["queued"] == 0:
+            progress_manager.broadcast(
+                f"All {enqueue_result['skipped']} documents already cached. No changes needed.",
+                100, "success", stage="complete", step="cached",
+                topic=topic, documents_skipped=enqueue_result["skipped"],
+            )
+            return {
+                "status": "success",
+                "topic": topic,
+                "documents_processed": 0,
+                "documents_skipped": enqueue_result["skipped"],
+                "pages_created": [],
+                "pages_updated": [],
+                "duration_ms": round((perf_counter() - started_at) * 1000, 2),
+            }
+
+        # Process the queue
+        result = await self.process_queue(topic)
+        result["documents_skipped"] = enqueue_result["skipped"]
+        return result
 
     def remove_wiki_page(self, filename: str) -> bool:
         path = os.path.join(self.wiki_dir, filename)

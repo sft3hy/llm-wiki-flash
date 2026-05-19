@@ -38,7 +38,7 @@ const SELECTED_WIKI_KEY = 'llm-wiki-selected-wiki';
 const ACTIVE_VIEW_KEY = 'llm-wiki-active-view';
 const LAST_PAGE_KEY = 'llm-wiki-last-pages';
 const SIDEBAR_COLLAPSED_KEY = 'llm-wiki-sidebar-collapsed';
-const GOVERNANCE_PAGE_NAMES = new Set(['SCHEMA.md', 'index.md', 'log.md']);
+const GOVERNANCE_PAGE_NAMES = new Set(['SCHEMA.md', 'index.md', 'log.md', 'purpose.md']);
 
 type ViewType = 'wiki' | 'chat' | 'settings' | 'maintenance' | 'graph' | 'upload' | 'builder';
 type WikiAction = 'create' | 'rename' | 'delete' | null;
@@ -403,6 +403,10 @@ function App() {
       try {
         const data = JSON.parse(event.data);
         if (data.channel === 'wiki_builder') {
+          // Refresh sidebar when the builder finishes for the current wiki
+          if (data.status === 'success' && data.wiki_id && data.wiki_id === selectedWikiId) {
+            void fetchWikiPages(data.wiki_id);
+          }
           return;
         }
         setIngestProgress(data);
@@ -424,7 +428,7 @@ function App() {
       }
     };
     return () => eventSource.close();
-  }, []);
+  }, [selectedWikiId]);
 
   useEffect(() => {
     let interval: number | undefined;
@@ -1049,7 +1053,7 @@ function App() {
                     </span>
                   </div>
                 </div>
-                {selectedEntryKind === 'wiki' && selectedPage && !['index.md', 'log.md', 'SCHEMA.md'].includes(selectedPage) && (
+                {selectedEntryKind === 'wiki' && selectedPage && !['index.md', 'log.md', 'SCHEMA.md', 'purpose.md'].includes(selectedPage) && (
                   <button onClick={() => setDeletePageName(selectedPage)} className="rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-red-300 transition hover:bg-red-500/20">
                     <Trash className="h-5 w-5" />
                   </button>

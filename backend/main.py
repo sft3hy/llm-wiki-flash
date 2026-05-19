@@ -1,6 +1,8 @@
 import os
 import errno
 import subprocess
+import asyncio
+import re
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,11 +25,13 @@ from wiki_builder.chat import chat_with_topic
 from wiki_builder.config import GenericJSONSearchConfig, PipelineConfig, SearxngConfig
 from wiki_builder.pipeline import PipelineRunner
 import chat_db
+import ingest_db
 import uuid
 import datetime
 from wiki_registry import WikiRegistry
 
 chat_db.init_db()
+ingest_db.init_ingest_db()
 
 logger = logging.getLogger("llm-wiki")
 logging.basicConfig(level=logging.INFO)
@@ -59,11 +63,13 @@ RAW_DIR = settings.RAW_DIR
 WIKI_DIR = settings.WIKI_DIR
 WIKIS_DIR = settings.WIKIS_DIR
 CANONICAL_SCHEMA_PATH = Path(WIKI_DIR) / "SCHEMA.md"
+CANONICAL_PURPOSE_PATH = Path(WIKI_DIR) / "purpose.md"
 wiki_registry = WikiRegistry(
     Path(WIKIS_DIR),
     Path(RAW_DIR),
     Path(WIKI_DIR),
     canonical_schema_path=CANONICAL_SCHEMA_PATH,
+    canonical_purpose_path=CANONICAL_PURPOSE_PATH,
     legacy_index_template_path=Path(WIKI_DIR) / "index.md",
     legacy_log_template_path=Path("data/wiki-OLD") / "log.md",
 )
@@ -119,6 +125,44 @@ class BuilderChatRequest(BaseModel):
     document_kind: Optional[str] = None
 
 
+class QueryRequest(BaseModel):
+    message: str
+    wiki_id: Optional[str] = None
+    history: Optional[List[dict]] = []
+    model: Optional[str] = None
+    document: Optional[str] = None
+
+
+class RetrievalSettingsRequest(BaseModel):
+    budget_tokens: int = 8192
+    max_keyword_hits: int = 12
+    max_graph_pages: int = 8
+    graph_max_hops: int = 2
+    graph_decay: float = 0.5
+    vector_weight: float = 0.4
+    max_pages_in_context: int = 12
+
+
+class ConversationCreateRequest(BaseModel):
+    wiki_id: str
+    title: str = "New Conversation"
+
+
+class ConversationRenameRequest(BaseModel):
+    title: str
+
+
+class ConversationMessageRequest(BaseModel):
+    message: str
+    model: Optional[str] = None
+    document: Optional[str] = None
+    history_depth: int = 10
+
+
+# In-memory retrieval settings store (per wiki)
+_retrieval_settings: dict[str, dict] = {}
+
+
 def _clean_user_path(path: str) -> Path:
     clean_path = path.strip().strip("'").strip('"')
     return Path(clean_path).expanduser().resolve()
@@ -137,11 +181,7 @@ def _resolve_builder_paths(wiki_id: str) -> dict:
     }
 
 
-def _extract_markdown_title(content: str, fallback: str) -> str:
-    for line in content.splitlines():
-        if line.startswith("# "):
-            return line[2:].strip()
-    return fallback
+
 
 
 def _resolve_searxng_url(candidate_url: str | None) -> str | None:
@@ -409,13 +449,19 @@ async def run_wiki_builder(request: BuilderRunRequest):
         wiki_id=selected_wiki_id,
     )
 
+    import functools
+    loop = asyncio.get_running_loop()
+
     def builder_progress(stage: str, message: str, progress: int, status: str = "processing", **context):
         payload = {"channel": "wiki_builder", "stage": stage, "topic": topic, "wiki_id": selected_wiki_id, **context}
-        progress_manager.broadcast(
-            message,
-            progress,
-            status,
-            **payload,
+        loop.call_soon_threadsafe(
+            functools.partial(
+                progress_manager.broadcast,
+                message,
+                progress,
+                status,
+                **payload
+            )
         )
 
     try:
@@ -430,7 +476,8 @@ async def run_wiki_builder(request: BuilderRunRequest):
             results_per_query=request.results_per_query,
             source_limit=request.source_limit,
         )
-        result = PipelineRunner(config, progress_callback=builder_progress).run_pipeline(topic)
+        runner = PipelineRunner(config, progress_callback=builder_progress)
+        result = await asyncio.to_thread(runner.run_pipeline, topic)
         wiki_registry.rebuild_embeddings(selected_wiki_id)
         wiki_registry.touch(selected_wiki_id)
         response = result.to_dict()
@@ -495,7 +542,7 @@ async def get_builder_topic(wiki_id: str = Query(...)):
             wiki_pages.append(
                 {
                     "name": file_name,
-                    "title": _extract_markdown_title(content, file_name.replace(".md", "").replace("-", " ").title()),
+                    "title": file_name.replace(".md", "").replace("-", " ").title(),
                 }
             )
 
@@ -579,25 +626,30 @@ async def builder_chat(request: BuilderChatRequest):
             document_name=request.document,
             document_kind=request.document_kind,
         )
+        
+
+        purpose_match = re.search(r'<UPDATE_PURPOSE>(.*?)</UPDATE_PURPOSE>', result["response"], flags=re.DOTALL)
+        if purpose_match:
+            new_purpose = purpose_match.group(1).strip()
+            purpose_path = Path(WIKIS_DIR).resolve() / request.wiki_id / "wiki" / "purpose.md"
+            purpose_path.write_text(f"# Wiki Purpose\n\n{new_purpose}", encoding="utf-8")
+            result["response"] = re.sub(r'<UPDATE_PURPOSE>.*?</UPDATE_PURPOSE>', '', result["response"], flags=re.DOTALL).strip()
+            
         return result
     except Exception as error:
         logger.error(f"Wiki builder chat failed: {error}")
         raise HTTPException(status_code=500, detail=str(error))
 
 
-# ─── Chat ──────────────────────────────────────────────────────────────
+# ─── Chat (Legacy — backward compat) ──────────────────────────────────
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
     try:
-        from core.query import QueryEngine
         resolved_wiki_id, paths = _get_wiki_paths(request.wiki_id)
         if not paths.embeddings_dir.exists() or not any(paths.embeddings_dir.iterdir()):
             wiki_registry.rebuild_embeddings(resolved_wiki_id)
-        engine = QueryEngine(str(paths.wiki_dir), embeddings_dir=str(paths.embeddings_dir))
-        
-        # We no longer need to manually construct the static wiki_context
-        # The qa_query method handles retrieving documents and sending them to the LLM
+        engine = _build_query_engine(resolved_wiki_id, paths)
         result = await engine.qa_query(
             query=request.message,
             history=request.history,
@@ -605,17 +657,25 @@ async def chat(request: ChatRequest):
             document=request.document
         )
         
+        purpose_match = re.search(r'<UPDATE_PURPOSE>(.*?)</UPDATE_PURPOSE>', result["response"], flags=re.DOTALL)
+        if purpose_match:
+            new_purpose = purpose_match.group(1).strip()
+            (paths.wiki_dir / "purpose.md").write_text(f"# Wiki Purpose\n\n{new_purpose}", encoding="utf-8")
+            result["response"] = re.sub(r'<UPDATE_PURPOSE>.*?</UPDATE_PURPOSE>', '', result["response"], flags=re.DOTALL).strip()
+        
         wiki_info = wiki_registry.load_wiki(resolved_wiki_id)
-        
-        # Save messages to database
-        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        user_msg_id = uuid.uuid4().hex
-        bot_msg_id = uuid.uuid4().hex
-        
-        chat_db.save_message(user_msg_id, resolved_wiki_id, request.message, "user", timestamp)
-        chat_db.save_message(bot_msg_id, resolved_wiki_id, result["response"], "bot", timestamp, request.model, result.get("context"))
+        ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        chat_db.save_message(uuid.uuid4().hex, resolved_wiki_id, request.message, "user", ts)
+        chat_db.save_message(uuid.uuid4().hex, resolved_wiki_id, result["response"], "bot", ts, request.model, result.get("context"))
 
-        return {"response": result["response"], "context": result["context"], "wiki_id": resolved_wiki_id, "wiki_name": wiki_info["name"]}
+        return {
+            "response": result["response"],
+            "context": result["context"],
+            "citation_map": result.get("citation_map", {}),
+            "retrieval_stats": result.get("retrieval_stats", {}),
+            "wiki_id": resolved_wiki_id,
+            "wiki_name": wiki_info["name"],
+        }
     except Exception as e:
         logger.error(f"Chat error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -631,7 +691,284 @@ async def get_chat_history_endpoint(wiki_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ─── Ingest ────────────────────────────────────────────────────────────
+# ─── Multi-Conversation Chat API ──────────────────────────────────────
+
+@app.get("/api/chats")
+async def list_chats(wiki_id: str = Query(...)):
+    resolved_wiki_id, _ = _get_wiki_paths(wiki_id)
+    return {"conversations": chat_db.list_conversations(resolved_wiki_id)}
+
+
+@app.post("/api/chats")
+async def create_chat(request: ConversationCreateRequest):
+    resolved_wiki_id, _ = _get_wiki_paths(request.wiki_id)
+    conv = chat_db.create_conversation(resolved_wiki_id, request.title)
+    return conv
+
+
+@app.patch("/api/chats/{conversation_id}")
+async def rename_chat(conversation_id: str, request: ConversationRenameRequest):
+    conv = chat_db.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    chat_db.rename_conversation(conversation_id, request.title)
+    return {"id": conversation_id, "title": request.title}
+
+
+@app.delete("/api/chats/{conversation_id}")
+async def delete_chat(conversation_id: str):
+    conv = chat_db.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    chat_db.delete_conversation(conversation_id)
+    return {"deleted": True, "id": conversation_id}
+
+
+@app.get("/api/chats/{conversation_id}/messages")
+async def get_chat_messages(conversation_id: str):
+    conv = chat_db.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    messages = chat_db.get_conversation_messages(conversation_id)
+    return {"conversation": conv, "messages": messages}
+
+
+@app.post("/api/chats/{conversation_id}/messages")
+async def send_chat_message(conversation_id: str, request: ConversationMessageRequest):
+    conv = chat_db.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    try:
+        resolved_wiki_id, paths = _get_wiki_paths(conv["wiki_id"])
+        if not paths.embeddings_dir.exists() or not any(paths.embeddings_dir.iterdir()):
+            wiki_registry.rebuild_embeddings(resolved_wiki_id)
+
+        engine = _build_query_engine(resolved_wiki_id, paths)
+
+        # Build history from conversation messages (limited by history_depth)
+        all_msgs = chat_db.get_conversation_messages(conversation_id)
+        recent = all_msgs[-(request.history_depth * 2):] if len(all_msgs) > request.history_depth * 2 else all_msgs
+        history = [
+            {"role": "user" if m["sender"] == "user" else "assistant", "content": m["text"]}
+            for m in recent
+        ]
+
+        result = await engine.qa_query(
+            query=request.message,
+            history=history,
+            model_id=request.model,
+            document=request.document,
+        )
+
+        # Handle purpose updates
+        purpose_match = re.search(r'<UPDATE_PURPOSE>(.*?)</UPDATE_PURPOSE>', result["response"], flags=re.DOTALL)
+        if purpose_match:
+            new_purpose = purpose_match.group(1).strip()
+            (paths.wiki_dir / "purpose.md").write_text(f"# Wiki Purpose\n\n{new_purpose}", encoding="utf-8")
+            result["response"] = re.sub(r'<UPDATE_PURPOSE>.*?</UPDATE_PURPOSE>', '', result["response"], flags=re.DOTALL).strip()
+
+        # Persist messages
+        ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        citation_map = result.get("citation_map", {})
+        retrieval_stats = result.get("retrieval_stats", {})
+
+        user_msg_id = uuid.uuid4().hex
+        bot_msg_id = uuid.uuid4().hex
+        chat_db.save_message(user_msg_id, resolved_wiki_id, request.message, "user", ts,
+                             conversation_id=conversation_id)
+        chat_db.save_message(bot_msg_id, resolved_wiki_id, result["response"], "bot", ts,
+                             model=request.model, context=result.get("context"),
+                             conversation_id=conversation_id,
+                             citations=citation_map, retrieval_stats=retrieval_stats)
+
+        # Auto-title if first message
+        if len(all_msgs) == 0:
+            try:
+                title_prompt = f"Create a very short (max 6 words), concise title for a conversation starting with this message: \"{request.message}\". Provide ONLY the title text, no quotes or explanation."
+                title = await call_with_fallback([HumanMessage(content=title_prompt)], "chat-titling", model_id=request.model)
+                title = title.strip().strip('"').strip("'")
+                if not title:
+                    title = request.message[:60].strip() + "..."
+            except Exception as e:
+                logger.warning(f"Failed to auto-title conversation: {e}")
+                title = request.message[:60].strip() + "..."
+            chat_db.rename_conversation(conversation_id, title)
+
+        return {
+            "user_message_id": user_msg_id,
+            "bot_message_id": bot_msg_id,
+            "response": result["response"],
+            "context": result.get("context"),
+            "citation_map": citation_map,
+            "retrieval_stats": retrieval_stats,
+            "conversation_id": conversation_id,
+        }
+    except Exception as e:
+        logger.error(f"Conversation message error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/chats/{conversation_id}/regenerate")
+async def regenerate_response(conversation_id: str, model: Optional[str] = Query(None)):
+    conv = chat_db.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    # Remove the last exchange
+    deleted = chat_db.delete_last_exchange(conversation_id)
+    if not deleted or not deleted.get("query"):
+        raise HTTPException(status_code=400, detail="No exchange to regenerate")
+
+    # Re-run as a new message
+    req = ConversationMessageRequest(message=deleted["query"], model=model)
+    return await send_chat_message(conversation_id, req)
+
+
+@app.post("/api/chats/{conversation_id}/save-to-wiki")
+async def save_chat_to_wiki(conversation_id: str):
+    conv_data = chat_db.get_conversation_for_export(conversation_id)
+    if not conv_data:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    try:
+        resolved_wiki_id, paths = _get_wiki_paths(conv_data["wiki_id"])
+        queries_dir = paths.wiki_dir / "queries"
+        queries_dir.mkdir(parents=True, exist_ok=True)
+
+        # Build the markdown page
+        slug = conv_data["title"].lower().replace(" ", "-")[:60]
+        slug = re.sub(r'[^a-z0-9\-]', '', slug)
+        filename = f"{slug}.md"
+
+        lines = [
+            "---",
+            f'title: "{conv_data["title"]}"',
+            f'type: query',
+            f'sources: ["chats/{conversation_id}"]',
+            f'created_at: {conv_data["created_at"][:10]}',
+            "---",
+            "",
+            f"# {conv_data['title']}",
+            "",
+        ]
+        for msg in conv_data.get("messages", []):
+            role_label = "**User:**" if msg["sender"] == "user" else "**Assistant:**"
+            lines.append(f"{role_label}")
+            lines.append(msg["text"])
+            lines.append("")
+
+        content = "\n".join(lines)
+        page_path = queries_dir / filename
+        page_path.write_text(content, encoding="utf-8")
+
+        return {
+            "saved": True,
+            "path": str(page_path),
+            "filename": filename,
+            "wiki_id": resolved_wiki_id,
+        }
+    except Exception as e:
+        logger.error(f"Save chat to wiki error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── Retrieval Settings ───────────────────────────────────────
+
+@app.get("/api/settings/retrieval")
+async def get_retrieval_settings(wiki_id: Optional[str] = Query(None)):
+    resolved_wiki_id, _ = _get_wiki_paths(wiki_id)
+    defaults = RetrievalSettingsRequest().model_dump()
+    current = _retrieval_settings.get(resolved_wiki_id, defaults)
+    return {"wiki_id": resolved_wiki_id, "settings": current}
+
+
+@app.post("/api/settings/retrieval")
+async def update_retrieval_settings(request: RetrievalSettingsRequest, wiki_id: Optional[str] = Query(None)):
+    resolved_wiki_id, _ = _get_wiki_paths(wiki_id)
+    _retrieval_settings[resolved_wiki_id] = request.model_dump()
+    return {"wiki_id": resolved_wiki_id, "settings": _retrieval_settings[resolved_wiki_id]}
+
+
+# ─── Query API ───────────────────────────────────────────────────
+
+def _build_query_engine(resolved_wiki_id: str, paths):
+    from core.query import QueryEngine, RetrievalSettings
+    raw_settings = _retrieval_settings.get(resolved_wiki_id, {})
+    rs = RetrievalSettings(**raw_settings) if raw_settings else RetrievalSettings()
+    return QueryEngine(
+        wiki_dir=str(paths.wiki_dir),
+        embeddings_dir=str(paths.embeddings_dir),
+        sources_dir=str(paths.sources_dir),
+        retrieval_settings=rs,
+    )
+
+
+@app.post("/api/query")
+async def api_query(request: QueryRequest):
+    """Full pipeline: retrieval + LLM response with citation map and retrieval stats."""
+    try:
+        resolved_wiki_id, paths = _get_wiki_paths(request.wiki_id)
+        if not paths.embeddings_dir.exists() or not any(paths.embeddings_dir.iterdir()):
+            wiki_registry.rebuild_embeddings(resolved_wiki_id)
+        engine = _build_query_engine(resolved_wiki_id, paths)
+        result = await engine.qa_query(
+            query=request.message,
+            history=request.history,
+            model_id=request.model,
+            document=request.document,
+        )
+        # Intercept purpose updates
+        purpose_match = re.search(r'<UPDATE_PURPOSE>(.*?)</UPDATE_PURPOSE>', result["response"], flags=re.DOTALL)
+        if purpose_match:
+            new_purpose = purpose_match.group(1).strip()
+            (paths.wiki_dir / "purpose.md").write_text(f"# Wiki Purpose\n\n{new_purpose}", encoding="utf-8")
+            result["response"] = re.sub(r'<UPDATE_PURPOSE>.*?</UPDATE_PURPOSE>', '', result["response"], flags=re.DOTALL).strip()
+        # Persist to chat DB
+        ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        chat_db.save_message(uuid.uuid4().hex, resolved_wiki_id, request.message, "user", ts)
+        chat_db.save_message(uuid.uuid4().hex, resolved_wiki_id, result["response"], "bot", ts, request.model, result.get("context"))
+        wiki_info = wiki_registry.load_wiki(resolved_wiki_id)
+        return {
+            "response": result["response"],
+            "context": result["context"],
+            "citation_map": result.get("citation_map", {}),
+            "retrieval_stats": result.get("retrieval_stats", {}),
+            "wiki_id": resolved_wiki_id,
+            "wiki_name": wiki_info["name"],
+        }
+    except Exception as e:
+        logger.error(f"Query API error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/query/search")
+async def api_query_search(request: QueryRequest):
+    """Retrieval only — no LLM call. Returns ranked pages and stats for debugging."""
+    try:
+        resolved_wiki_id, paths = _get_wiki_paths(request.wiki_id)
+        engine = _build_query_engine(resolved_wiki_id, paths)
+        allocated, stats = await engine.retrieve(request.message, document=request.document)
+        return {
+            "wiki_id": resolved_wiki_id,
+            "query": request.message,
+            "pages": [
+                {
+                    "path": p.path,
+                    "title": p.title,
+                    "score": p.combined_score,
+                    "type": p.page_type,
+                    "tokens": p.token_count,
+                    "truncated": p.truncated,
+                    "snippet": p.content[:300],
+                }
+                for p in allocated
+            ],
+            "retrieval_stats": stats,
+        }
+    except Exception as e:
+        logger.error(f"Query search error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/ingest")
 async def ingest_source(
@@ -669,7 +1006,7 @@ async def ingest_source(
         raise HTTPException(status_code=400, detail="No readable text files uploaded.")
 
     # Trigger Ingest Engine with selected model
-    engine = IngestEngine(str(paths.sources_dir), str(paths.wiki_dir), model_id=model, embeddings_dir=str(paths.embeddings_dir))
+    engine = IngestEngine(str(paths.sources_dir), str(paths.wiki_dir), model_id=model, embeddings_dir=str(paths.embeddings_dir), wiki_id=resolved_wiki_id)
     result = await engine.process_corpus(topic, documents)
     wiki_registry.update_models(resolved_wiki_id, {"ingest": model or settings.DEFAULT_MODEL})
     wiki_registry.touch(resolved_wiki_id)
@@ -710,13 +1047,46 @@ async def ingest_vault(request: VaultIngestRequest):
         raise HTTPException(status_code=400, detail=f"No readable markdown/text files found in vault: {vault_path}")
 
     resolved_wiki_id, paths = _get_wiki_paths(request.wiki_id)
-    engine = IngestEngine(str(paths.sources_dir), str(paths.wiki_dir), model_id=request.model, embeddings_dir=str(paths.embeddings_dir))
+    engine = IngestEngine(str(paths.sources_dir), str(paths.wiki_dir), model_id=request.model, embeddings_dir=str(paths.embeddings_dir), wiki_id=resolved_wiki_id)
     result = await engine.process_corpus(request.topic, documents)
     wiki_registry.update_models(resolved_wiki_id, {"ingest": request.model or settings.DEFAULT_MODEL})
     wiki_registry.touch(resolved_wiki_id)
     result["wiki_id"] = resolved_wiki_id
 
     return result
+
+
+# ─── Ingest Queue ──────────────────────────────────────────────────────
+
+@app.get("/ingest/queue")
+async def get_ingest_queue(wiki_id: Optional[str] = Query(None)):
+    """Return queue state summary for a wiki."""
+    resolved_wiki_id, _ = _get_wiki_paths(wiki_id)
+    state = ingest_db.get_queue_state(resolved_wiki_id)
+    return {"wiki_id": resolved_wiki_id, "queue": state}
+
+@app.get("/ingest/tasks")
+async def get_ingest_tasks(wiki_id: Optional[str] = Query(None)):
+    """Return full task list for a wiki."""
+    resolved_wiki_id, _ = _get_wiki_paths(wiki_id)
+    tasks = ingest_db.get_all_tasks(resolved_wiki_id)
+    return {"wiki_id": resolved_wiki_id, "tasks": tasks}
+
+@app.post("/ingest/retry/{task_id}")
+async def retry_ingest_task(task_id: str):
+    """Retry a failed ingest task."""
+    success = ingest_db.retry_task(task_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Task not found or not in failed state.")
+    return {"status": "success", "task_id": task_id, "message": "Task re-queued for retry."}
+
+@app.post("/ingest/cancel/{task_id}")
+async def cancel_ingest_task(task_id: str):
+    """Cancel a pending ingest task."""
+    success = ingest_db.cancel_task(task_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Task not found or not in pending state.")
+    return {"status": "success", "task_id": task_id, "message": "Task cancelled."}
 
 
 # ─── Raw Management ───────────────────────────────────────────────────
@@ -802,7 +1172,7 @@ async def meditate(model: Optional[str] = Query(None), wiki_id: Optional[str] = 
         return {"status": "success", "message": "Wiki is already up to date.", "processed": 0}
         
     # 3. Read pending files and process as a corpus
-    engine = IngestEngine(str(paths.sources_dir), str(paths.wiki_dir), model_id=model, embeddings_dir=str(paths.embeddings_dir))
+    engine = IngestEngine(str(paths.sources_dir), str(paths.wiki_dir), model_id=model, embeddings_dir=str(paths.embeddings_dir), wiki_id=resolved_wiki_id)
     documents = []
     for filename in pending_files:
         file_path = os.path.join(str(paths.sources_dir), filename)
@@ -892,7 +1262,7 @@ async def update_wiki_page(filename: str, request: WikiEditRequest, wiki_id: Opt
 async def delete_wiki_page(filename: str, wiki_id: Optional[str] = Query(None)):
     """Delete a wiki page (used during merge operations)."""
     resolved_wiki_id, paths = _get_wiki_paths(wiki_id)
-    engine = IngestEngine(str(paths.sources_dir), str(paths.wiki_dir), embeddings_dir=str(paths.embeddings_dir))
+    engine = IngestEngine(str(paths.sources_dir), str(paths.wiki_dir), embeddings_dir=str(paths.embeddings_dir), wiki_id=resolved_wiki_id)
     success = engine.remove_wiki_page(filename)
     
     if not success:
